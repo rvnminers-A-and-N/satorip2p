@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "satorip2p"
+version = "1.0.0"
+description = "Peer-to-peer networking module for Satori Network"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.12,<3.14"
+authors = [
+    {name = "Satori Network"}
+]
+keywords = ["p2p", "libp2p", "satori", "networking", "distributed"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Networking",
+]
+
+dependencies = [
+    "libp2p>=0.4.0",
+    "trio>=0.22.0",
+    "miniupnpc>=2.2.0",
+    "multiaddr>=0.0.9",
+    # IMPORTANT: pymultihash provides the correct 'multihash' module
+    # Do NOT install py-multihash which has incompatible API
+    "pymultihash>=0.8.2",
+    # Required for compat layer WebSocket servers
+    "trio-websocket>=0.11.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-trio>=0.8.0",
+    "pytest-timeout>=2.2.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/SatoriNetwork/satorip2p"
+Repository = "https://github.com/SatoriNetwork/satorip2p"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["satorip2p*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

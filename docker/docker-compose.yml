@@ -1,0 +1,93 @@
+# satorip2p/docker/docker-compose.yml
+#
+# Multi-peer test environment using Docker bridge networking.
+# NO --network host required - uses Circuit Relay for NAT traversal.
+#
+# Usage:
+#   docker compose -f docker/docker-compose.yml up --build
+#   docker compose -f docker/docker-compose.yml down
+
+services:
+  # Bootstrap/Relay node - this peer has "open ports" within Docker network
+  # Acts as a relay for other peers that can't receive direct connections
+  relay-node:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: satorip2p-relay
+    environment:
+      - SATORI_P2P_ROLE=relay
+      - SATORI_P2P_LISTEN_PORT=4001
+      - SATORI_P2P_ENABLE_RELAY=true
+      - PYTHONUNBUFFERED=1
+    networks:
+      - satori-p2p
+    # Relay node exposes ports within Docker network
+    expose:
+      - "4001"
+    command: ["python", "-m", "satorip2p.docker.relay_node"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "from satorip2p import Peers; print('OK')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Publisher peer - publishes data streams
+  publisher:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: satorip2p-publisher
+    environment:
+      - SATORI_P2P_ROLE=publisher
+      # Bootstrap with full peer ID (deterministic from seed=1)
+      - SATORI_P2P_BOOTSTRAP=/dns4/relay-node/tcp/4001/p2p/16Uiu2HAmEWQnHq2jLKJypwVnVoQeFCULuyop6atvq2eWjYSUjzNi
+      - PYTHONUNBUFFERED=1
+    networks:
+      - satori-p2p
+    depends_on:
+      relay-node:
+        condition: service_healthy
+    command: ["python", "-m", "satorip2p.docker.publisher_node"]
+
+  # Subscriber peer - subscribes to data streams
+  subscriber:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: satorip2p-subscriber
+    environment:
+      - SATORI_P2P_ROLE=subscriber
+      # Bootstrap with full peer ID (deterministic from seed=1)
+      - SATORI_P2P_BOOTSTRAP=/dns4/relay-node/tcp/4001/p2p/16Uiu2HAmEWQnHq2jLKJypwVnVoQeFCULuyop6atvq2eWjYSUjzNi
+      - PYTHONUNBUFFERED=1
+    networks:
+      - satori-p2p
+    depends_on:
+      relay-node:
+        condition: service_healthy
+    command: ["python", "-m", "satorip2p.docker.subscriber_node"]
+
+  # Test runner - runs integration tests against the network
+  test-runner:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: satorip2p-tests
+    environment:
+      # Bootstrap with full peer ID (deterministic from seed=1)
+      - SATORI_P2P_BOOTSTRAP=/dns4/relay-node/tcp/4001/p2p/16Uiu2HAmEWQnHq2jLKJypwVnVoQeFCULuyop6atvq2eWjYSUjzNi
+      - PYTHONUNBUFFERED=1
+    networks:
+      - satori-p2p
+    depends_on:
+      - relay-node
+      - publisher
+      - subscriber
+    command: ["pytest", "tests/test_integration.py", "-v", "--timeout=120"]
+
+networks:
+  satori-p2p:
+    driver: bridge
+    # Bridge mode - no special privileges needed
+    # Circuit Relay handles NAT traversal between containers

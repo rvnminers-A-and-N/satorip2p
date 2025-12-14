@@ -1,0 +1,24 @@
+# satorip2p requirements
+# Install with: pip install -r requirements.txt
+
+# Core P2P library
+libp2p>=0.4.0
+
+# Async IO
+trio>=0.22.0
+
+# UPnP for NAT traversal
+miniupnpc>=2.2.0
+
+# Multiaddr handling
+multiaddr>=0.0.9
+
+# IMPORTANT: Use pymultihash, NOT py-multihash
+# py-multihash has an incompatible API that breaks libp2p
+pymultihash>=0.8.2
+
+# Development/Testing dependencies (optional)
+# pytest>=7.0.0
+# pytest-asyncio>=0.21.0
+# pytest-timeout>=2.2.0
+# pandas  # For DataFrame tests

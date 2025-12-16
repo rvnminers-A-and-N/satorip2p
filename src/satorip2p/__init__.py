@@ -69,6 +69,39 @@ from .config import (
     DEFAULT_PORT,
     BOOTSTRAP_PEERS,
 )
+from .protocol.rewards import (
+    SatoriScorer,
+    RewardCalculator,
+    RoundDataStore,
+    PredictionInput,
+    ScoreBreakdown,
+    ScoringResult,
+    RewardEntry,
+    RoundSummary,
+    score_prediction,
+    verify_score,
+    get_round_boundaries,
+)
+from .blockchain import (
+    RewardDistributor,
+    EvrmoreDistributor,
+    MerkleTree,
+    AssetBadgeIssuer,
+    TransactionBuilder,
+    UnsignedTransaction,
+    build_distribution_transaction,
+)
+
+# ElectrumX client (optional - requires network connectivity)
+try:
+    from .electrumx import (
+        ElectrumXClient,
+        ElectrumXConnection,
+        ElectrumXError,
+    )
+    ELECTRUMX_AVAILABLE = True
+except ImportError:
+    ELECTRUMX_AVAILABLE = False
 from .integration import (
     # Drop-in replacement classes
     P2PSatoriPubSubConn,
@@ -146,4 +179,29 @@ __all__ = [
     "AutoSwitchConfig",
     "start_auto_switch",
     "stop_auto_switch",
+    # Rewards (Phase 5)
+    "SatoriScorer",
+    "RewardCalculator",
+    "RoundDataStore",
+    "PredictionInput",
+    "ScoreBreakdown",
+    "ScoringResult",
+    "RewardEntry",
+    "RoundSummary",
+    "score_prediction",
+    "verify_score",
+    "get_round_boundaries",
+    # Blockchain (Phase 6)
+    "RewardDistributor",
+    "EvrmoreDistributor",
+    "MerkleTree",
+    "AssetBadgeIssuer",
+    "TransactionBuilder",
+    "UnsignedTransaction",
+    "build_distribution_transaction",
+    # ElectrumX (Phase 7)
+    "ElectrumXClient",
+    "ElectrumXConnection",
+    "ElectrumXError",
+    "ELECTRUMX_AVAILABLE",
 ]

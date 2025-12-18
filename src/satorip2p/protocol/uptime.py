@@ -354,6 +354,34 @@ class UptimeTracker:
     # PUBLIC API
     # ========================================================================
 
+    async def start(self) -> bool:
+        """
+        Start the uptime tracker with heartbeat sending.
+
+        This starts a background task that sends heartbeats every HEARTBEAT_INTERVAL.
+
+        Returns:
+            True if started successfully
+        """
+        if self._is_heartbeating:
+            return True
+
+        self._is_heartbeating = True
+
+        # Auto-start a round if not already in one
+        if not self._current_round:
+            import time
+            round_id = f"round_{int(time.time())}"
+            self.start_round(round_id, int(time.time()))
+
+        logger.info("Uptime tracker started, heartbeat sending enabled")
+        return True
+
+    async def stop(self) -> None:
+        """Stop heartbeat sending."""
+        self._is_heartbeating = False
+        logger.info("Uptime tracker stopped")
+
     def start_round(self, round_id: str, round_start: int) -> None:
         """
         Start tracking a new round.

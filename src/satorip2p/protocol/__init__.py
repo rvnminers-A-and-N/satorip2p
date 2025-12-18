@@ -27,6 +27,8 @@ from .rewards import (
     verify_reward_claim,
     get_round_boundaries,
 )
+from .lending import LendingManager, PoolConfig, LendRegistration
+from .delegation import DelegationManager, DelegationRecord, CharityUpdate
 
 __all__ = [
     "SubscriptionManager",
@@ -60,4 +62,12 @@ __all__ = [
     "verify_score",
     "verify_reward_claim",
     "get_round_boundaries",
+    # Lending (Pool Operations)
+    "LendingManager",
+    "PoolConfig",
+    "LendRegistration",
+    # Delegation (Proxy Operations)
+    "DelegationManager",
+    "DelegationRecord",
+    "CharityUpdate",
 ]

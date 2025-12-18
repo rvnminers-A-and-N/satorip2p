@@ -82,6 +82,8 @@ from .protocol.rewards import (
     verify_score,
     get_round_boundaries,
 )
+from .protocol.lending import LendingManager, PoolConfig, LendRegistration
+from .protocol.delegation import DelegationManager, DelegationRecord, CharityUpdate
 from .blockchain import (
     RewardDistributor,
     EvrmoreDistributor,
@@ -204,4 +206,12 @@ __all__ = [
     "ElectrumXConnection",
     "ElectrumXError",
     "ELECTRUMX_AVAILABLE",
+    # Lending (Pool Operations)
+    "LendingManager",
+    "PoolConfig",
+    "LendRegistration",
+    # Delegation (Proxy Operations)
+    "DelegationManager",
+    "DelegationRecord",
+    "CharityUpdate",
 ]

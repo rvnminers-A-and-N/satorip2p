@@ -62,6 +62,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Local message storage and retrieval
 - `protocol/rendezvous.py` - Peer discovery
   - Rendezvous protocol for peer introduction
+- `protocol/lending.py` - P2P Pool Lending Registry
+  - `LendingManager` for pool lending operations
+  - `PoolConfig` dataclass for pool operator configuration
+  - `LendRegistration` dataclass for lender registrations
+  - PubSub topics for real-time lending updates
+  - DHT storage for permanent lending records
+- `protocol/delegation.py` - P2P Delegation/Proxy Protocol
+  - `DelegationManager` for stake delegation operations
+  - `DelegationRecord` dataclass for delegation tracking
+  - `CharityUpdate` dataclass for charity status updates
+  - Support for parent/child delegation relationships
+  - PubSub and DHT integration for delegation sync
 
 #### Identity Layer
 - `identity/evrmore_bridge.py` - Enhanced bridge
@@ -93,6 +105,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `P2PSatoriServerClient` with full API compatibility
 - `integration/pubsub.py` - Drop-in replacement for SatoriPubSubConn
   - `P2PSatoriPubSubConn` with WebSocket-like interface
+- `integration/neuron.py` - Enhanced P2PSatoriServerClient
+  - P2P lending methods (lendToAddress, lendRemove, poolAccepting, etc.)
+  - P2P delegation methods (delegateGet, delegateRemove, stakeProxyChildren, etc.)
+  - P2P-first observation polling with getObservation()
+  - Manager setters for LendingManager, DelegationManager, OracleNetwork
 
 #### Documentation
 - `CONTRIBUTING.md` - Contribution guidelines
@@ -171,6 +188,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [x] ElectrumX client module (electrumx/client.py, connection.py)
 - [x] Multi-sig helper functions (redeem script, scriptSig, signature parsing)
 - [x] Signer evolution roadmap documentation (SIGNER_ROADMAP.md)
+- [x] P2P Pool Lending Registry (protocol/lending.py)
+- [x] P2P Delegation/Proxy Protocol (protocol/delegation.py)
+- [x] P2P-first observation polling (integration/neuron.py)
 
 ### Pending (Team Configuration)
 - [ ] Signer configuration (6 placeholder values in signer.py)

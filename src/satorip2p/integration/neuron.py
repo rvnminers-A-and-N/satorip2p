@@ -958,6 +958,427 @@ class P2PSatoriServerClient:
                 pass
         return [], 0
 
+    # ========================================================================
+    # P2P MANAGERS (set externally by Neuron/Engine initialization)
+    # ========================================================================
+
+    _lending_manager = None
+    _delegation_manager = None
+    _oracle_network = None
+
+    def set_lending_manager(self, manager):
+        """Set the P2P lending manager."""
+        self._lending_manager = manager
+
+    def set_delegation_manager(self, manager):
+        """Set the P2P delegation manager."""
+        self._delegation_manager = manager
+
+    def set_oracle_network(self, oracle):
+        """Set the P2P oracle network."""
+        self._oracle_network = oracle
+
+    # ========================================================================
+    # OBSERVATION METHODS (P2P-first)
+    # ========================================================================
+
+    def getObservation(self, stream: str = 'bitcoin') -> Union[Dict, None]:
+        """
+        Get latest observation for a stream.
+
+        P2P-first: tries oracle network first, falls back to central.
+
+        Args:
+            stream: Stream ID to get observation for
+
+        Returns:
+            Dict with observation data or None
+        """
+        # Try P2P oracle network first
+        if self._mode != NetworkingMode.CENTRAL and self._oracle_network:
+            try:
+                obs = self._oracle_network.get_latest_observation(stream)
+                if obs:
+                    return {
+                        'observation_id': obs.hash,
+                        'value': obs.value,
+                        'observed_at': obs.timestamp,
+                        'ts': obs.timestamp,
+                        'hash': obs.hash,
+                        'oracle': obs.oracle,
+                        'sources': [obs.oracle],
+                    }
+            except Exception as e:
+                logger.warning(f"P2P observation lookup failed: {e}")
+
+        # Fallback to central
+        if self._central_client:
+            try:
+                return self._central_client.getObservation(stream)
+            except Exception as e:
+                logger.warning(f"Central observation lookup failed: {e}")
+
+        return None
+
+    # ========================================================================
+    # LENDING METHODS (P2P-enabled)
+    # ========================================================================
+
+    def lendToAddress(
+        self,
+        vaultSignature: Union[str, bytes],
+        vaultPubkey: str,
+        address: str,
+        vaultAddress: str = ''
+    ) -> tuple:
+        """
+        Add lending address (join a pool).
+
+        P2P: Uses LendingManager.lend_to_vault()
+        Central: POST /stake/lend/to/address
+        """
+        if self._mode != NetworkingMode.CENTRAL and self._lending_manager:
+            try:
+                import asyncio
+                # Convert signature to string if bytes
+                sig = vaultSignature if isinstance(vaultSignature, str) else vaultSignature.hex()
+                result = asyncio.get_event_loop().run_until_complete(
+                    self._lending_manager.lend_to_vault(
+                        lender_address=address,
+                        vault_address=vaultAddress,
+                        vault_signature=sig,
+                        vault_pubkey=vaultPubkey,
+                    )
+                )
+                return result
+            except Exception as e:
+                logger.warning(f"P2P lendToAddress failed: {e}")
+
+        if self._central_client:
+            try:
+                return self._central_client.lendToAddress(
+                    vaultSignature=vaultSignature,
+                    vaultPubkey=vaultPubkey,
+                    address=address,
+                    vaultAddress=vaultAddress
+                )
+            except Exception:
+                pass
+        return (False, "Failed to register lending")
+
+    def lendRemove(self) -> tuple:
+        """
+        Remove lending address.
+
+        P2P: Uses LendingManager.remove_lending()
+        Central: GET /stake/lend/remove
+        """
+        if self._mode != NetworkingMode.CENTRAL and self._lending_manager:
+            try:
+                import asyncio
+                result = asyncio.get_event_loop().run_until_complete(
+                    self._lending_manager.remove_lending(
+                        lender_address=self.wallet.address if self.wallet else ""
+                    )
+                )
+                return result
+            except Exception as e:
+                logger.warning(f"P2P lendRemove failed: {e}")
+
+        if self._central_client:
+            try:
+                return self._central_client.lendRemove()
+            except Exception:
+                pass
+        return (False, "Failed to remove lending")
+
+    def lendAddress(self) -> Union[str, None]:
+        """
+        Get current lending address.
+
+        P2P: Uses LendingManager.get_current_lend_address()
+        Central: GET /stake/lend/address
+        """
+        if self._mode != NetworkingMode.CENTRAL and self._lending_manager:
+            try:
+                return self._lending_manager.get_current_lend_address(
+                    lender_address=self.wallet.address if self.wallet else ""
+                )
+            except Exception as e:
+                logger.warning(f"P2P lendAddress failed: {e}")
+
+        if self._central_client:
+            try:
+                return self._central_client.lendAddress()
+            except Exception:
+                pass
+        return ""
+
+    def poolAddresses(self) -> tuple:
+        """
+        Get all pool addresses (lending addresses).
+
+        P2P: Uses LendingManager.get_my_lendings()
+        Central: GET /stake/lend/addresses
+        """
+        if self._mode != NetworkingMode.CENTRAL and self._lending_manager:
+            try:
+                import asyncio
+                lendings = asyncio.get_event_loop().run_until_complete(
+                    self._lending_manager.get_my_lendings(
+                        lender_address=self.wallet.address if self.wallet else ""
+                    )
+                )
+                return (True, [l.to_dict() for l in lendings])
+            except Exception as e:
+                logger.warning(f"P2P poolAddresses failed: {e}")
+
+        if self._central_client:
+            try:
+                return self._central_client.poolAddresses()
+            except Exception:
+                pass
+        return (False, [])
+
+    def poolAddressRemove(self, lend_id: str) -> str:
+        """
+        Remove a specific lending pool address.
+
+        P2P: Uses LendingManager.remove_lending_by_id()
+        Central: POST /stake/lend/address/remove
+        """
+        if self._mode != NetworkingMode.CENTRAL and self._lending_manager:
+            try:
+                import asyncio
+                result = asyncio.get_event_loop().run_until_complete(
+                    self._lending_manager.remove_lending_by_id(lend_id)
+                )
+                return result[1]  # Return message
+            except Exception as e:
+                logger.warning(f"P2P poolAddressRemove failed: {e}")
+
+        if self._central_client:
+            try:
+                return self._central_client.poolAddressRemove(lend_id)
+            except Exception:
+                pass
+        return "Failed to remove pool address"
+
+    def poolParticipants(self, vaultAddress: str) -> str:
+        """
+        Get pool participants for a vault address.
+
+        P2P: Uses LendingManager.get_pool_participants()
+        Central: POST /pool/participants
+        """
+        if self._mode != NetworkingMode.CENTRAL and self._lending_manager:
+            try:
+                import asyncio
+                import json
+                participants = asyncio.get_event_loop().run_until_complete(
+                    self._lending_manager.get_pool_participants(vaultAddress)
+                )
+                return json.dumps([p.to_dict() for p in participants])
+            except Exception as e:
+                logger.warning(f"P2P poolParticipants failed: {e}")
+
+        if self._central_client:
+            try:
+                return self._central_client.poolParticipants(vaultAddress)
+            except Exception:
+                pass
+        return "[]"
+
+    def setPoolSize(self, poolStakeLimit: float) -> tuple:
+        """
+        Set pool stake limit.
+
+        P2P: Uses LendingManager.set_pool_size()
+        Central: POST /pool/size/set
+        """
+        if self._mode != NetworkingMode.CENTRAL and self._lending_manager:
+            try:
+                import asyncio
+                result = asyncio.get_event_loop().run_until_complete(
+                    self._lending_manager.set_pool_size(
+                        vault_address=self.wallet.address if self.wallet else "",
+                        pool_size_limit=poolStakeLimit,
+                    )
+                )
+                return result
+            except Exception as e:
+                logger.warning(f"P2P setPoolSize failed: {e}")
+
+        if self._central_client:
+            try:
+                return self._central_client.setPoolSize(poolStakeLimit)
+            except Exception:
+                pass
+        return (False, "Failed to set pool size")
+
+    # ========================================================================
+    # DELEGATION METHODS (P2P-enabled)
+    # ========================================================================
+
+    def delegateGet(self) -> tuple:
+        """
+        Get current delegate address.
+
+        P2P: Uses DelegationManager.get_my_delegate()
+        Central: GET /stake/proxy/delegate
+        """
+        if self._mode != NetworkingMode.CENTRAL and self._delegation_manager:
+            try:
+                delegate = self._delegation_manager.get_my_delegate(
+                    child_address=self.wallet.address if self.wallet else ""
+                )
+                return (True, delegate)
+            except Exception as e:
+                logger.warning(f"P2P delegateGet failed: {e}")
+
+        if self._central_client:
+            try:
+                return self._central_client.delegateGet()
+            except Exception:
+                pass
+        return (False, "")
+
+    def delegateRemove(self) -> tuple:
+        """
+        Remove current delegation.
+
+        P2P: Uses DelegationManager.remove_delegation()
+        Central: GET /stake/proxy/delegate/remove
+        """
+        if self._mode != NetworkingMode.CENTRAL and self._delegation_manager:
+            try:
+                import asyncio
+                result = asyncio.get_event_loop().run_until_complete(
+                    self._delegation_manager.remove_delegation(
+                        child_address=self.wallet.address if self.wallet else ""
+                    )
+                )
+                return result
+            except Exception as e:
+                logger.warning(f"P2P delegateRemove failed: {e}")
+
+        if self._central_client:
+            try:
+                return self._central_client.delegateRemove()
+            except Exception:
+                pass
+        return (False, "Failed to remove delegation")
+
+    def stakeProxyChildren(self) -> tuple:
+        """
+        Get children delegating to this node.
+
+        P2P: Uses DelegationManager.get_proxy_children_formatted()
+        Central: GET /stake/proxy/children
+        """
+        if self._mode != NetworkingMode.CENTRAL and self._delegation_manager:
+            try:
+                import asyncio
+                import json
+                children = asyncio.get_event_loop().run_until_complete(
+                    self._delegation_manager.get_proxy_children_formatted(
+                        parent_address=self.wallet.address if self.wallet else ""
+                    )
+                )
+                return (True, json.dumps(children))
+            except Exception as e:
+                logger.warning(f"P2P stakeProxyChildren failed: {e}")
+
+        if self._central_client:
+            try:
+                return self._central_client.stakeProxyChildren()
+            except Exception:
+                pass
+        return (False, "[]")
+
+    def stakeProxyCharity(self, address: str, childId: int = None) -> tuple:
+        """
+        Mark child delegation as charity.
+
+        P2P: Uses DelegationManager.set_charity_status(True)
+        Central: POST /stake/proxy/charity
+        """
+        if self._mode != NetworkingMode.CENTRAL and self._delegation_manager:
+            try:
+                import asyncio
+                result = asyncio.get_event_loop().run_until_complete(
+                    self._delegation_manager.set_charity_status(
+                        delegation_id=str(childId) if childId else "",
+                        child_address=address,
+                        charity=True,
+                    )
+                )
+                return result
+            except Exception as e:
+                logger.warning(f"P2P stakeProxyCharity failed: {e}")
+
+        if self._central_client:
+            try:
+                return self._central_client.stakeProxyCharity(address, childId)
+            except Exception:
+                pass
+        return (False, "Failed to set charity status")
+
+    def stakeProxyCharityNot(self, address: str, childId: int = None) -> tuple:
+        """
+        Unmark child delegation as charity.
+
+        P2P: Uses DelegationManager.set_charity_status(False)
+        Central: POST /stake/proxy/charity/not
+        """
+        if self._mode != NetworkingMode.CENTRAL and self._delegation_manager:
+            try:
+                import asyncio
+                result = asyncio.get_event_loop().run_until_complete(
+                    self._delegation_manager.set_charity_status(
+                        delegation_id=str(childId) if childId else "",
+                        child_address=address,
+                        charity=False,
+                    )
+                )
+                return result
+            except Exception as e:
+                logger.warning(f"P2P stakeProxyCharityNot failed: {e}")
+
+        if self._central_client:
+            try:
+                return self._central_client.stakeProxyCharityNot(address, childId)
+            except Exception:
+                pass
+        return (False, "Failed to unset charity status")
+
+    def stakeProxyRemove(self, address: str, childId: int) -> tuple:
+        """
+        Remove a proxy child.
+
+        P2P: Uses DelegationManager.remove_proxy_child()
+        Central: POST /stake/proxy/remove
+        """
+        if self._mode != NetworkingMode.CENTRAL and self._delegation_manager:
+            try:
+                import asyncio
+                result = asyncio.get_event_loop().run_until_complete(
+                    self._delegation_manager.remove_proxy_child(
+                        delegation_id=str(childId),
+                        child_address=address,
+                    )
+                )
+                return result
+            except Exception as e:
+                logger.warning(f"P2P stakeProxyRemove failed: {e}")
+
+        if self._central_client:
+            try:
+                return self._central_client.stakeProxyRemove(address, childId)
+            except Exception:
+                pass
+        return (False, "Failed to remove proxy child")
+
 
 class P2PCentrifugoClient:
     """

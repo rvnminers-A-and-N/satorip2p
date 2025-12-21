@@ -88,6 +88,11 @@ class DelegationRecord:
         """Get deterministic message for signing."""
         return f"{self.delegation_id}:{self.child_address}:{self.parent_address}:{self.child_proxy}:{self.timestamp}"
 
+    def get_record_hash(self) -> str:
+        """Get deterministic hash of this record for verification."""
+        data = f"{self.delegation_id}:{self.parent_address}:{self.child_address}:{self.vault_address}:{self.child_proxy}:{self.pointed}:{self.charity}:{self.timestamp}"
+        return hashlib.sha256(data.encode()).hexdigest()
+
     def is_active(self) -> bool:
         """Check if delegation is active (not deleted)."""
         return self.deleted == 0
@@ -783,6 +788,22 @@ class DelegationManager:
             await self.peers.put_dht(key, value.encode())
         except Exception as e:
             logger.warning(f"Failed to store delegation in DHT: {e}")
+
+    async def _get_delegation_from_dht(self, delegation_id: str) -> Optional[DelegationRecord]:
+        """Retrieve delegation record from DHT."""
+        if not self.peers:
+            return None
+
+        try:
+            key = f"{DHT_DELEGATION_PREFIX}{delegation_id}"
+            data = await self.peers.get_dht(key)
+            if data:
+                record_dict = json.loads(data.decode() if isinstance(data, bytes) else data)
+                return DelegationRecord.from_dict(record_dict)
+        except Exception as e:
+            logger.warning(f"Failed to get delegation from DHT: {e}")
+
+        return None
 
     async def _register_proxy_rendezvous(self, record: DelegationRecord) -> None:
         """Register delegation in Rendezvous for discovery."""

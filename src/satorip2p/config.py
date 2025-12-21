@@ -27,9 +27,25 @@ BOOTSTRAP_PEERS: List[str] = [
 # GossipSub topic prefix for Satori streams
 STREAM_TOPIC_PREFIX = "satori/stream/"
 
-# Protocol IDs
+# Protocol Versioning
+PROTOCOL_VERSION = "1.0.0"
+MIN_PROTOCOL_VERSION = "1.0.0"
+
+# Protocol IDs (primary, for backward compatibility)
 SATORI_PROTOCOL_ID = "/satori/1.0.0"
 SATORI_STORE_PROTOCOL_ID = "/satori/store/1.0.0"
+
+# All supported protocol IDs in preference order (newest first)
+SATORI_PROTOCOL_IDS = [
+    "/satori/1.0.0",
+    # Future versions will be added here:
+    # "/satori/1.1.0",
+    # "/satori/2.0.0",
+]
+
+SATORI_STORE_PROTOCOL_IDS = [
+    "/satori/store/1.0.0",
+]
 
 # GossipSub parameters (tuned for Satori's use case)
 GOSSIP_PARAMS = {

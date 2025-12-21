@@ -84,6 +84,36 @@ from .protocol.rewards import (
 )
 from .protocol.lending import LendingManager, PoolConfig, LendRegistration
 from .protocol.delegation import DelegationManager, DelegationRecord, CharityUpdate
+from .protocol.versioning import (
+    VersionNegotiator,
+    PeerVersionTracker,
+    ProtocolVersion,
+    CURRENT_VERSION,
+    MIN_SUPPORTED_VERSION,
+    PROTOCOL_VERSION,
+    get_version_info,
+    get_current_version,
+    get_supported_versions,
+    check_compatibility,
+)
+from .protocol.storage import (
+    StorageBackend,
+    MemoryBackend,
+    FileBackend,
+    DHTBackend,
+    RedundantStorage,
+    StorageManager,
+    DeferredRewardsStorage,
+    AlertStorage,
+)
+from .protocol.bandwidth import (
+    BandwidthTracker,
+    QoSManager,
+    RateLimiter,
+    BandwidthMetrics,
+    MessagePriority,
+    create_qos_manager,
+)
 from .blockchain import (
     RewardDistributor,
     EvrmoreDistributor,
@@ -214,4 +244,31 @@ __all__ = [
     "DelegationManager",
     "DelegationRecord",
     "CharityUpdate",
+    # Protocol Versioning
+    "VersionNegotiator",
+    "PeerVersionTracker",
+    "ProtocolVersion",
+    "CURRENT_VERSION",
+    "MIN_SUPPORTED_VERSION",
+    "PROTOCOL_VERSION",
+    "get_version_info",
+    "get_current_version",
+    "get_supported_versions",
+    "check_compatibility",
+    # Storage Redundancy
+    "StorageBackend",
+    "MemoryBackend",
+    "FileBackend",
+    "DHTBackend",
+    "RedundantStorage",
+    "StorageManager",
+    "DeferredRewardsStorage",
+    "AlertStorage",
+    # Bandwidth & QoS
+    "BandwidthTracker",
+    "QoSManager",
+    "RateLimiter",
+    "BandwidthMetrics",
+    "MessagePriority",
+    "create_qos_manager",
 ]

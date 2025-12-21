@@ -31,11 +31,9 @@ def docker_available() -> bool:
         return False
 
 
-# Skip all tests if Docker not available
-pytestmark = pytest.mark.skipif(
-    not docker_available(),
-    reason="Docker not available"
-)
+# Note: These tests don't actually require Docker containers.
+# They test actual P2P peer connections using trio locally.
+# The Docker Compose tests at the end do require Docker.
 
 
 class MockEvrmoreIdentity:

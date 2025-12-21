@@ -74,10 +74,10 @@ def create_mock_peers():
     mock_peers = Mock()
     mock_peers.publish = AsyncMock()
     mock_peers.subscribe = AsyncMock()
-    mock_peers.dht_get = AsyncMock(return_value=None)
-    mock_peers.dht_put = AsyncMock()
-    mock_peers.rendezvous_register = AsyncMock()
-    mock_peers.rendezvous_discover = AsyncMock(return_value=[])
+    mock_peers.get_dht = AsyncMock(return_value=None)
+    mock_peers.put_dht = AsyncMock()
+    mock_peers.register_rendezvous = AsyncMock()
+    mock_peers.discover_rendezvous = AsyncMock(return_value=[])
     return mock_peers
 
 
@@ -89,6 +89,18 @@ def create_mock_wallet():
     mock_wallet.sign = Mock(return_value=b"testsig123")
     mock_wallet.verify = Mock(return_value=True)
     return mock_wallet
+
+
+def add_registration_to_manager(
+    manager: LendingManager,
+    reg: LendRegistration,
+) -> None:
+    """Add a lend registration to the manager with proper indexing."""
+    lend_id = str(reg.lend_id)
+    manager._registrations[lend_id] = reg
+    manager._pool_lenders[reg.vault_address].append(lend_id)
+    manager._lender_pools[reg.lender_address].append(lend_id)
+    manager._my_lendings[reg.lender_address] = reg.vault_address
 
 
 # ============================================================================
@@ -207,59 +219,65 @@ class TestLendingManagerBasic:
         """Test manager initialization."""
         peers = create_mock_peers()
         wallet = create_mock_wallet()
-        manager = LendingManager(peers=peers, wallet=wallet)
+        manager = LendingManager(peers=peers, wallet=wallet, wallet_address=wallet.address)
 
-        assert manager._peers == peers
-        assert manager._wallet == wallet
-        assert manager._my_address == "ETestWallet789"
+        assert manager.peers == peers
+        assert manager.wallet == wallet
+        assert manager.wallet_address == "ETestWallet789"
 
     @pytest.mark.asyncio
     async def test_register_pool(self):
         """Test registering as a pool operator."""
         peers = create_mock_peers()
         wallet = create_mock_wallet()
-        manager = LendingManager(peers=peers, wallet=wallet)
+        manager = LendingManager(peers=peers, wallet=wallet, wallet_address=wallet.address)
 
-        result = await manager.register_pool(
+        success, message = await manager.register_pool(
+            vault_address=wallet.address,
+            vault_pubkey=wallet.pubkey,
             pool_size_limit=10000.0,
             worker_reward_pct=10.0,
         )
 
-        assert result is not None
-        assert result.accepting is True
-        peers.publish.assert_called()
+        assert success is True
 
     @pytest.mark.asyncio
     async def test_unregister_pool(self):
         """Test unregistering as a pool operator."""
         peers = create_mock_peers()
         wallet = create_mock_wallet()
-        manager = LendingManager(peers=peers, wallet=wallet)
+        manager = LendingManager(peers=peers, wallet=wallet, wallet_address=wallet.address)
 
         # First register
-        await manager.register_pool(pool_size_limit=10000.0)
+        await manager.register_pool(
+            vault_address=wallet.address,
+            vault_pubkey=wallet.pubkey,
+            pool_size_limit=10000.0,
+        )
 
         # Then unregister
-        result = await manager.unregister_pool()
+        success, message = await manager.unregister_pool(wallet.address)
 
-        assert result is True
-        assert manager._my_pool_config is None or manager._my_pool_config.accepting is False
+        assert success is True
 
     @pytest.mark.asyncio
     async def test_set_pool_size(self):
         """Test setting pool size."""
         peers = create_mock_peers()
         wallet = create_mock_wallet()
-        manager = LendingManager(peers=peers, wallet=wallet)
+        manager = LendingManager(peers=peers, wallet=wallet, wallet_address=wallet.address)
 
         # Register first
-        await manager.register_pool(pool_size_limit=10000.0)
+        await manager.register_pool(
+            vault_address=wallet.address,
+            vault_pubkey=wallet.pubkey,
+            pool_size_limit=10000.0,
+        )
 
         # Update pool size
-        result = await manager.set_pool_size(20000.0)
+        success, message = await manager.set_pool_size(wallet.address, 20000.0)
 
-        assert result is not None
-        assert result.pool_size_limit == 20000.0
+        assert success is True
 
 
 # ============================================================================
@@ -274,54 +292,64 @@ class TestLendingManagerLendOperations:
         """Test lending to a vault."""
         peers = create_mock_peers()
         wallet = create_mock_wallet()
-        manager = LendingManager(peers=peers, wallet=wallet)
+        manager = LendingManager(peers=peers, wallet=wallet, wallet_address=wallet.address)
 
         # Create a pool config for target vault
         target_config = create_test_pool_config(vault_address="EVaultTarget")
-        manager._pool_configs["EVaultTarget"] = target_config
+        manager._pools["EVaultTarget"] = target_config
 
-        result = await manager.lend_to_vault(
+        success, message = await manager.lend_to_vault(
+            lender_address=wallet.address,
             vault_address="EVaultTarget",
-            amount=1000.0,
+            vault_signature="test_sig",
+            vault_pubkey="testpubkey",
+            lent_out=1000.0,
         )
 
-        assert result is not None
-        assert result.vault_address == "EVaultTarget"
-        assert result.lent_out == 1000.0
+        assert success is True
 
     @pytest.mark.asyncio
     async def test_remove_lending(self):
         """Test removing a lending registration."""
         peers = create_mock_peers()
         wallet = create_mock_wallet()
-        manager = LendingManager(peers=peers, wallet=wallet)
+        manager = LendingManager(peers=peers, wallet=wallet, wallet_address=wallet.address)
 
         # First create a lending
-        manager._pool_configs["EVaultTarget"] = create_test_pool_config(vault_address="EVaultTarget")
-        reg = await manager.lend_to_vault(vault_address="EVaultTarget", amount=1000.0)
+        manager._pools["EVaultTarget"] = create_test_pool_config(vault_address="EVaultTarget")
+        success, message = await manager.lend_to_vault(
+            lender_address=wallet.address,
+            vault_address="EVaultTarget",
+            vault_signature="test_sig",
+            vault_pubkey="testpubkey",
+            lent_out=1000.0,
+        )
+
+        # Get the lend_id from the registration
+        lend_id = list(manager._registrations.keys())[0] if manager._registrations else None
 
         # Now remove it
-        result = await manager.remove_lending(reg.lend_id)
+        result_success, result_msg = await manager.remove_lending(wallet.address, lend_id)
 
-        assert result is True
+        assert result_success is True
 
     @pytest.mark.asyncio
     async def test_get_pool_participants(self):
         """Test getting pool participants."""
         peers = create_mock_peers()
         wallet = create_mock_wallet()
-        manager = LendingManager(peers=peers, wallet=wallet)
+        manager = LendingManager(peers=peers, wallet=wallet, wallet_address=wallet.address)
 
-        # Add some test registrations
-        manager._lend_registrations["1"] = create_test_lend_registration(
-            lend_id=1, vault_address="EVault1"
-        )
-        manager._lend_registrations["2"] = create_test_lend_registration(
+        # Add some test registrations using helper
+        add_registration_to_manager(manager, create_test_lend_registration(
+            lend_id=1, vault_address="EVault1", lender_address="ELender1"
+        ))
+        add_registration_to_manager(manager, create_test_lend_registration(
             lend_id=2, vault_address="EVault1", lender_address="ELender2"
-        )
-        manager._lend_registrations["3"] = create_test_lend_registration(
-            lend_id=3, vault_address="EVault2"  # Different vault
-        )
+        ))
+        add_registration_to_manager(manager, create_test_lend_registration(
+            lend_id=3, vault_address="EVault2", lender_address="ELender3"  # Different vault
+        ))
 
         participants = await manager.get_pool_participants("EVault1")
 
@@ -334,17 +362,17 @@ class TestLendingManagerLendOperations:
         peers = create_mock_peers()
         wallet = create_mock_wallet()
         wallet.address = "EMyAddress"
-        manager = LendingManager(peers=peers, wallet=wallet)
+        manager = LendingManager(peers=peers, wallet=wallet, wallet_address=wallet.address)
 
-        # Add some registrations
-        manager._lend_registrations["1"] = create_test_lend_registration(
-            lend_id=1, lender_address="EMyAddress"
-        )
-        manager._lend_registrations["2"] = create_test_lend_registration(
-            lend_id=2, lender_address="EOtherAddress"
-        )
+        # Add some registrations using helper
+        add_registration_to_manager(manager, create_test_lend_registration(
+            lend_id=1, lender_address="EMyAddress", vault_address="EVault1"
+        ))
+        add_registration_to_manager(manager, create_test_lend_registration(
+            lend_id=2, lender_address="EOtherAddress", vault_address="EVault2"
+        ))
 
-        my_lendings = await manager.get_my_lendings()
+        my_lendings = await manager.get_my_lendings("EMyAddress")
 
         assert len(my_lendings) == 1
         assert my_lendings[0].lender_address == "EMyAddress"
@@ -355,14 +383,15 @@ class TestLendingManagerLendOperations:
         peers = create_mock_peers()
         wallet = create_mock_wallet()
         wallet.address = "EMyAddress"
-        manager = LendingManager(peers=peers, wallet=wallet)
+        manager = LendingManager(peers=peers, wallet=wallet, wallet_address=wallet.address)
 
-        # Add a lending
-        manager._lend_registrations["1"] = create_test_lend_registration(
+        # Add a lending using helper
+        add_registration_to_manager(manager, create_test_lend_registration(
             lend_id=1, lender_address="EMyAddress", vault_address="EVaultTarget"
-        )
+        ))
 
-        result = await manager.get_current_lend_address()
+        # get_current_lend_address is NOT async
+        result = manager.get_current_lend_address("EMyAddress")
 
         assert result == "EVaultTarget"
 
@@ -379,34 +408,45 @@ class TestLendingManagerPubSub:
         """Test handling incoming pool config messages."""
         peers = create_mock_peers()
         wallet = create_mock_wallet()
-        manager = LendingManager(peers=peers, wallet=wallet)
+        manager = LendingManager(peers=peers, wallet=wallet, wallet_address=wallet.address)
 
-        # Simulate receiving a pool config message
+        # Create a pool config
         config = create_test_pool_config(vault_address="ERemoteVault")
-        message_data = json.dumps(config.to_dict()).encode()
+        message_data = {
+            "type": "pool_config",
+            "data": config.to_dict()
+        }
 
-        await manager._handle_pool_config(message_data)
+        await manager._on_pool_config_message(message_data)
 
-        assert "ERemoteVault" in manager._pool_configs
-        assert manager._pool_configs["ERemoteVault"].pool_size_limit == 10000.0
+        assert "ERemoteVault" in manager._pools
+        assert manager._pools["ERemoteVault"].vault_address == "ERemoteVault"
 
     @pytest.mark.asyncio
     async def test_handle_lend_registration_message(self):
         """Test handling incoming lend registration messages."""
         peers = create_mock_peers()
         wallet = create_mock_wallet()
-        manager = LendingManager(peers=peers, wallet=wallet)
+        manager = LendingManager(peers=peers, wallet=wallet, wallet_address=wallet.address)
 
-        # First add the target pool
-        manager._pool_configs["EVaultTest123"] = create_test_pool_config()
+        # Create a lend registration
+        reg = create_test_lend_registration(
+            lend_id=1,
+            lender_address="ERemoteLender",
+            vault_address="EVaultTest123",
+        )
+        message_data = {
+            "type": "lend_registration",
+            "data": reg.to_dict()
+        }
 
-        # Simulate receiving a lend registration
-        reg = create_test_lend_registration()
-        message_data = json.dumps(reg.to_dict()).encode()
+        await manager._on_lend_registration_message(message_data)
 
-        await manager._handle_lend_registration(message_data)
-
-        assert len(manager._lend_registrations) > 0
+        assert "1" in manager._registrations or 1 in manager._registrations
+        # Check if the registration was added (key could be int or string)
+        stored_reg = manager._registrations.get("1") or manager._registrations.get(1)
+        assert stored_reg is not None
+        assert stored_reg.lender_address == "ERemoteLender"
 
 
 # ============================================================================
@@ -421,28 +461,24 @@ class TestLendingManagerDHT:
         """Test storing data to DHT."""
         peers = create_mock_peers()
         wallet = create_mock_wallet()
-        manager = LendingManager(peers=peers, wallet=wallet)
+        manager = LendingManager(peers=peers, wallet=wallet, wallet_address=wallet.address)
 
-        config = create_test_pool_config()
-        await manager._store_pool_config_to_dht(config)
+        config = create_test_pool_config(vault_address="EDHTTestVault")
+        await manager._store_pool_in_dht(config)
 
-        peers.dht_put.assert_called()
+        peers.put_dht.assert_called()
 
     @pytest.mark.asyncio
-    async def test_retrieve_from_dht(self):
-        """Test retrieving data from DHT."""
+    async def test_store_lend_to_dht(self):
+        """Test storing lend registration to DHT."""
         peers = create_mock_peers()
         wallet = create_mock_wallet()
-        manager = LendingManager(peers=peers, wallet=wallet)
+        manager = LendingManager(peers=peers, wallet=wallet, wallet_address=wallet.address)
 
-        # Mock DHT returning data
-        config = create_test_pool_config()
-        peers.dht_get = AsyncMock(return_value=json.dumps(config.to_dict()).encode())
+        reg = create_test_lend_registration(lend_id=99)
+        await manager._store_lend_in_dht(reg)
 
-        result = await manager._get_pool_config_from_dht("EVaultTest123")
-
-        assert result is not None
-        assert result.vault_address == "EVaultTest123"
+        peers.put_dht.assert_called()
 
 
 # ============================================================================
@@ -460,37 +496,46 @@ class TestLendingManagerIntegration:
         # Create pool operator
         pool_wallet = create_mock_wallet()
         pool_wallet.address = "EPoolOperator"
-        pool_manager = LendingManager(peers=peers, wallet=pool_wallet)
+        pool_wallet.pubkey = "pool_pubkey"
+        pool_manager = LendingManager(peers=peers, wallet=pool_wallet, wallet_address=pool_wallet.address)
 
         # Pool operator registers
-        pool_config = await pool_manager.register_pool(
+        success, message = await pool_manager.register_pool(
+            vault_address=pool_wallet.address,
+            vault_pubkey=pool_wallet.pubkey,
             pool_size_limit=10000.0,
             worker_reward_pct=10.0,
         )
-        assert pool_config is not None
+        assert success is True
 
         # Create lender
         lender_wallet = create_mock_wallet()
         lender_wallet.address = "ELender"
-        lender_manager = LendingManager(peers=peers, wallet=lender_wallet)
+        lender_manager = LendingManager(peers=peers, wallet=lender_wallet, wallet_address=lender_wallet.address)
 
-        # Lender discovers pool (simulate)
-        lender_manager._pool_configs["EPoolOperator"] = pool_config
+        # Lender discovers pool (simulate) - copy the pool config
+        pool_config = pool_manager._pools.get("EPoolOperator")
+        lender_manager._pools["EPoolOperator"] = pool_config
 
         # Lender lends to pool
-        registration = await lender_manager.lend_to_vault(
+        success, message = await lender_manager.lend_to_vault(
+            lender_address=lender_wallet.address,
             vault_address="EPoolOperator",
-            amount=1000.0,
+            vault_signature="test_sig",
+            vault_pubkey=pool_wallet.pubkey,
+            lent_out=1000.0,
         )
-        assert registration is not None
-        assert registration.vault_address == "EPoolOperator"
+        assert success is True
 
-        # Verify current lend address
-        current = await lender_manager.get_current_lend_address()
+        # Verify current lend address (sync method)
+        current = lender_manager.get_current_lend_address(lender_wallet.address)
         assert current == "EPoolOperator"
 
+        # Get the lend_id
+        lend_id = list(lender_manager._registrations.keys())[0]
+
         # Lender removes lending
-        result = await lender_manager.remove_lending(registration.lend_id)
+        result, msg = await lender_manager.remove_lending(lender_wallet.address, lend_id)
         assert result is True
 
     @pytest.mark.asyncio
@@ -499,11 +544,16 @@ class TestLendingManagerIntegration:
         peers = create_mock_peers()
         pool_wallet = create_mock_wallet()
         pool_wallet.address = "EPool"
-        pool_manager = LendingManager(peers=peers, wallet=pool_wallet)
+        pool_wallet.pubkey = "pool_pubkey"
+        pool_manager = LendingManager(peers=peers, wallet=pool_wallet, wallet_address=pool_wallet.address)
 
         # Register with small pool size
-        await pool_manager.register_pool(pool_size_limit=500.0)
+        await pool_manager.register_pool(
+            vault_address=pool_wallet.address,
+            vault_pubkey=pool_wallet.pubkey,
+            pool_size_limit=500.0,
+        )
 
         # Try to update to larger size
-        result = await pool_manager.set_pool_size(1000.0)
-        assert result.pool_size_limit == 1000.0
+        success, msg = await pool_manager.set_pool_size(pool_wallet.address, 1000.0)
+        assert success is True

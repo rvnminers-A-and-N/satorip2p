@@ -60,6 +60,269 @@ ROLE_MULTIPLIER_CAP = 1.25  # Maximum multiplier (25% bonus cap)
 # Relay uptime threshold
 RELAY_UPTIME_THRESHOLD = 0.95  # 95% uptime required for bonus
 
+# ============================================================================
+# STAKE BONUS CONSTANTS (Prediction-Centric Model)
+# ============================================================================
+#
+# Rewards are primarily based on PREDICTION ACCURACY, not stake amount.
+# However, staking above the minimum (50 SATORI) provides small bonuses.
+#
+# Formula: reward = score × total_multiplier / total_weighted
+#
+# Where total_multiplier = 1.0 + stake_bonus + role_bonus + referral_bonus
+#
+# This ensures:
+# - Predictions are the PRIMARY factor (someone with 500 SATORI and bad
+#   predictions earns less than someone with 50 SATORI and great predictions)
+# - Having more stake provides a SMALL bonus, not proportional scaling
+# - Pools can't dominate just by accumulating stake
+# - Referrals provide another avenue for bonus multipliers
+
+MIN_STAKE = 50                      # Minimum stake to participate
+STAKE_BONUS_INTERVAL = 50           # Bonus per this many SATORI above minimum
+STAKE_BONUS_PER_INTERVAL = 0.05     # +5% per interval
+STAKE_BONUS_CAP = 0.25              # Maximum +25% stake bonus
+
+
+# ============================================================================
+# REFERRAL BONUS CONSTANTS
+# ============================================================================
+#
+# Nodes that successfully refer new users earn bonus multipliers.
+# Tiers are based on total confirmed referrals:
+#
+# | Tier     | Referrals | Bonus |
+# |----------|-----------|-------|
+# | Bronze   | 5         | +2%   |
+# | Silver   | 25        | +5%   |
+# | Gold     | 100       | +8%   |
+# | Platinum | 500       | +12%  |
+# | Diamond  | 2000      | +15%  |
+
+REFERRAL_BONUS_BRONZE = 0.02    # +2%
+REFERRAL_BONUS_SILVER = 0.05    # +5%
+REFERRAL_BONUS_GOLD = 0.08      # +8%
+REFERRAL_BONUS_PLATINUM = 0.12  # +12%
+REFERRAL_BONUS_DIAMOND = 0.15   # +15%
+REFERRAL_BONUS_CAP = 0.15       # Maximum +15% referral bonus
+
+# Thresholds for each tier
+REFERRAL_TIER_BRONZE = 5
+REFERRAL_TIER_SILVER = 25
+REFERRAL_TIER_GOLD = 100
+REFERRAL_TIER_PLATINUM = 500
+REFERRAL_TIER_DIAMOND = 2000
+
+
+# ============================================================================
+# POOL DIVERSITY BONUS CONSTANTS
+# ============================================================================
+#
+# Smaller pools receive bonus multipliers to encourage decentralization.
+# This creates natural incentive for lenders to spread across pools.
+#
+# | Pool Total Stake | Diversity Bonus |
+# |------------------|-----------------|
+# | < 1,000 SATORI   | +10%            |
+# | < 5,000 SATORI   | +5%             |
+# | < 10,000 SATORI  | +2%             |
+# | >= 10,000 SATORI | 0% (no penalty) |
+#
+# Large pools aren't penalized, they just don't get the diversity bonus.
+# This encourages pool operators to stay smaller for better returns.
+
+POOL_DIVERSITY_TIER_SMALL = 1000      # < 1000 SATORI
+POOL_DIVERSITY_TIER_MEDIUM = 5000     # < 5000 SATORI
+POOL_DIVERSITY_TIER_LARGE = 10000     # < 10000 SATORI
+
+POOL_DIVERSITY_BONUS_SMALL = 0.10     # +10% for small pools
+POOL_DIVERSITY_BONUS_MEDIUM = 0.05    # +5% for medium pools
+POOL_DIVERSITY_BONUS_LARGE = 0.02     # +2% for large pools
+POOL_DIVERSITY_BONUS_CAP = 0.10       # Maximum +10% pool diversity bonus
+
+
+def calculate_pool_diversity_bonus(pool_total_stake: float) -> float:
+    """
+    Calculate pool diversity bonus based on total pool stake.
+
+    Smaller pools receive higher bonuses to encourage decentralization.
+    Large pools get no bonus (but no penalty either).
+
+    Examples:
+        500 SATORI pool   -> +10% bonus (small)
+        3000 SATORI pool  -> +5% bonus (medium)
+        8000 SATORI pool  -> +2% bonus (large)
+        15000 SATORI pool -> 0% bonus (very large)
+
+    Args:
+        pool_total_stake: Total stake in the pool (0 if solo predictor)
+
+    Returns:
+        Bonus multiplier (0.0 to 0.10)
+    """
+    # Solo predictors (not in a pool) don't get diversity bonus
+    if pool_total_stake <= 0:
+        return 0.0
+
+    if pool_total_stake < POOL_DIVERSITY_TIER_SMALL:
+        return POOL_DIVERSITY_BONUS_SMALL
+    elif pool_total_stake < POOL_DIVERSITY_TIER_MEDIUM:
+        return POOL_DIVERSITY_BONUS_MEDIUM
+    elif pool_total_stake < POOL_DIVERSITY_TIER_LARGE:
+        return POOL_DIVERSITY_BONUS_LARGE
+    else:
+        return 0.0
+
+
+def get_pool_diversity_tier(pool_total_stake: float) -> Optional[str]:
+    """
+    Get the diversity tier name for a pool.
+
+    Args:
+        pool_total_stake: Total stake in the pool
+
+    Returns:
+        Tier name or None if too large for bonus
+    """
+    if pool_total_stake <= 0:
+        return None
+    elif pool_total_stake < POOL_DIVERSITY_TIER_SMALL:
+        return 'small'
+    elif pool_total_stake < POOL_DIVERSITY_TIER_MEDIUM:
+        return 'medium'
+    elif pool_total_stake < POOL_DIVERSITY_TIER_LARGE:
+        return 'large'
+    else:
+        return None
+
+
+def calculate_referral_bonus(referral_count: int) -> float:
+    """
+    Calculate referral bonus based on number of successful referrals.
+
+    Provides bonus multiplier for referring new users to the network.
+    Higher tiers unlock better bonuses.
+
+    Examples:
+        0 referrals   -> 0% bonus
+        5 referrals   -> +2% bonus (Bronze)
+        25 referrals  -> +5% bonus (Silver)
+        100 referrals -> +8% bonus (Gold)
+        500 referrals -> +12% bonus (Platinum)
+        2000+ refs    -> +15% bonus (Diamond)
+
+    Args:
+        referral_count: Number of confirmed referrals
+
+    Returns:
+        Bonus multiplier (0.0 to 0.15)
+    """
+    if referral_count >= REFERRAL_TIER_DIAMOND:
+        return REFERRAL_BONUS_DIAMOND
+    elif referral_count >= REFERRAL_TIER_PLATINUM:
+        return REFERRAL_BONUS_PLATINUM
+    elif referral_count >= REFERRAL_TIER_GOLD:
+        return REFERRAL_BONUS_GOLD
+    elif referral_count >= REFERRAL_TIER_SILVER:
+        return REFERRAL_BONUS_SILVER
+    elif referral_count >= REFERRAL_TIER_BRONZE:
+        return REFERRAL_BONUS_BRONZE
+    else:
+        return 0.0
+
+
+def get_referral_tier(referral_count: int) -> Optional[str]:
+    """
+    Get the tier name for a given referral count.
+
+    Args:
+        referral_count: Number of confirmed referrals
+
+    Returns:
+        Tier name or None if below Bronze
+    """
+    if referral_count >= REFERRAL_TIER_DIAMOND:
+        return 'diamond'
+    elif referral_count >= REFERRAL_TIER_PLATINUM:
+        return 'platinum'
+    elif referral_count >= REFERRAL_TIER_GOLD:
+        return 'gold'
+    elif referral_count >= REFERRAL_TIER_SILVER:
+        return 'silver'
+    elif referral_count >= REFERRAL_TIER_BRONZE:
+        return 'bronze'
+    else:
+        return None
+
+
+def calculate_stake_bonus(stake: float) -> float:
+    """
+    Calculate stake bonus for amounts above minimum.
+
+    Provides +5% bonus per 50 SATORI above the 50 SATORI minimum,
+    capped at +25% total.
+
+    Examples:
+        50 SATORI  -> 0% bonus (minimum)
+        100 SATORI -> +5% bonus (1 interval above)
+        200 SATORI -> +15% bonus (3 intervals above)
+        500 SATORI -> +25% bonus (capped)
+
+    Args:
+        stake: Amount of SATORI staked
+
+    Returns:
+        Bonus multiplier (0.0 to 0.25)
+    """
+    if stake <= MIN_STAKE:
+        return 0.0
+
+    excess = stake - MIN_STAKE
+    intervals = int(excess / STAKE_BONUS_INTERVAL)
+    bonus = intervals * STAKE_BONUS_PER_INTERVAL
+
+    return min(bonus, STAKE_BONUS_CAP)
+
+
+def get_total_multiplier(
+    stake: float,
+    role_multiplier: float = 1.0,
+    referral_count: int = 0,
+    pool_total_stake: float = 0.0
+) -> float:
+    """
+    Calculate total reward multiplier combining all bonus sources.
+
+    The stake bonus, role bonus, referral bonus, and pool diversity bonus
+    are ADDITIVE to the base 1.0.
+    Total cap is 1.75 (base 1.0 + 0.25 stake + 0.25 role + 0.15 referral + 0.10 pool).
+
+    Bonus breakdown:
+    - Stake: +5% per 50 SATORI above minimum (50), capped at +25%
+    - Role: +5% relay, +10% oracle, +10% signer, capped at +25%
+    - Referral: +2% to +15% based on referral tier
+    - Pool Diversity: +2% to +10% for smaller pools (encourages decentralization)
+
+    Args:
+        stake: Amount of SATORI staked
+        role_multiplier: Role-based multiplier (1.0 to 1.25)
+        referral_count: Number of confirmed referrals
+        pool_total_stake: Total stake in the pool (0 for solo predictors)
+
+    Returns:
+        Total multiplier (1.0 to 1.75)
+    """
+    stake_bonus = calculate_stake_bonus(stake)
+    role_bonus = role_multiplier - 1.0  # Extract bonus from multiplier
+    referral_bonus = calculate_referral_bonus(referral_count)
+    pool_diversity_bonus = calculate_pool_diversity_bonus(pool_total_stake)
+
+    # Combine bonuses (all added to base 1.0)
+    total = 1.0 + stake_bonus + role_bonus + referral_bonus + pool_diversity_bonus
+
+    # Cap at 1.75 (75% maximum bonus)
+    return min(total, 1.75)
+
 
 @dataclass
 class NodeRoles:
@@ -699,6 +962,8 @@ class RewardCalculator:
         round_end: int,
         epoch: int = 0,
         node_roles: Optional[Dict[str, "NodeRoles"]] = None,
+        referral_counts: Optional[Dict[str, int]] = None,
+        pool_stakes: Optional[Dict[str, float]] = None,
     ) -> RoundSummary:
         """
         Calculate rewards for all predictions in a round.
@@ -713,6 +978,8 @@ class RewardCalculator:
             round_end: Round end timestamp (23:59:59 UTC)
             epoch: Epoch number
             node_roles: Optional {address: NodeRoles} for role multipliers
+            referral_counts: Optional {address: count} for referral bonuses
+            pool_stakes: Optional {address: total_stake} for pool diversity bonus
 
         Returns:
             RoundSummary with all rewards calculated
@@ -726,8 +993,8 @@ class RewardCalculator:
             if breakdown.final_score >= self.min_score_threshold:
                 scores[pred.predictor_address] = (breakdown.final_score, pred)
 
-        # Calculate reward shares with role multipliers
-        rewards = self._distribute_rewards(scores, reward_pool, node_roles)
+        # Calculate reward shares with role multipliers, referral bonuses, and pool diversity
+        rewards = self._distribute_rewards(scores, reward_pool, node_roles, referral_counts, pool_stakes)
 
         # Build reward entries with ranking
         reward_entries = []
@@ -772,18 +1039,40 @@ class RewardCalculator:
         self,
         scores: Dict[str, Tuple[float, PredictionInput]],
         reward_pool: float,
-        node_roles: Optional[Dict[str, "NodeRoles"]] = None
+        node_roles: Optional[Dict[str, "NodeRoles"]] = None,
+        referral_counts: Optional[Dict[str, int]] = None,
+        pool_stakes: Optional[Dict[str, float]] = None
     ) -> Dict[str, float]:
         """
-        Distribute reward pool proportionally to scores with role multipliers.
+        Distribute reward pool using PREDICTION-CENTRIC model.
+
+        IMPORTANT: Predictions are the PRIMARY factor for rewards.
+        Stake provides a SMALL bonus (+5% per 50 SATORI above minimum),
+        NOT proportional scaling.
 
         The formula is:
-        Your Reward = (Score × Multiplier) / Sum(All Scores × Multipliers) × Pool
+        Your Reward = (Score × Total_Multiplier) / Sum(All Weighted Scores) × Pool
+
+        Where Total_Multiplier = 1.0 + stake_bonus + role_bonus + referral_bonus + pool_diversity_bonus
+        - stake_bonus: +5% per 50 SATORI above 50 minimum, capped at +25%
+        - role_bonus: +5% relay, +10% oracle, +10% signer, capped at +25%
+        - referral_bonus: +2% to +15% based on referral tier
+        - pool_diversity_bonus: +2% to +10% for smaller pools (decentralization incentive)
+        - Total cap: +75% maximum (1.75x multiplier)
+
+        Example:
+        - Node A: 0.80 accuracy, 50 SATORI, no roles, no refs -> 0.80 × 1.00 = 0.80
+        - Node B: 0.80 accuracy, 200 SATORI, relay, small pool -> 0.80 × 1.30 = 1.04
+        - Node C: 0.60 accuracy, 500 SATORI, all roles, Diamond -> 0.60 × 1.75 = 1.05
+        - Node D: 0.80 accuracy, 50 SATORI, no roles, Gold refs -> 0.80 × 1.08 = 0.864
+        Node C wins with maximum multiplier but poor predictions still limits reward.
 
         Args:
             scores: {address: (score, prediction)}
             reward_pool: Total SATORI to distribute
             node_roles: Optional {address: NodeRoles} for role multipliers
+            referral_counts: Optional {address: count} for referral bonuses
+            pool_stakes: Optional {address: total_stake} for pool diversity bonus
 
         Returns:
             {address: reward_amount}
@@ -791,13 +1080,31 @@ class RewardCalculator:
         if not scores:
             return {}
 
-        # Calculate weighted scores (score × multiplier)
+        # Calculate weighted scores (score × total_multiplier)
+        # NOTE: stake provides BONUS, not proportional scaling
         weighted_scores: Dict[str, float] = {}
-        for address, (score, _) in scores.items():
-            multiplier = 1.0
+        for address, (score, prediction) in scores.items():
+            # Get role multiplier (1.0 to 1.25)
+            role_multiplier = 1.0
             if node_roles and address in node_roles:
-                multiplier = node_roles[address].get_multiplier()
-            weighted_scores[address] = score * multiplier
+                role_multiplier = node_roles[address].get_multiplier()
+
+            # Get referral count
+            ref_count = 0
+            if referral_counts and address in referral_counts:
+                ref_count = referral_counts[address]
+
+            # Get pool total stake for diversity bonus
+            pool_total = 0.0
+            if pool_stakes and address in pool_stakes:
+                pool_total = pool_stakes[address]
+
+            # Get total multiplier (stake bonus + role bonus + referral bonus + pool diversity)
+            stake = prediction.stake if hasattr(prediction, 'stake') else MIN_STAKE
+            total_multiplier = get_total_multiplier(stake, role_multiplier, ref_count, pool_total)
+
+            # Score × multiplier (predictions are primary, bonuses are secondary)
+            weighted_scores[address] = score * total_multiplier
 
         total_weighted = sum(weighted_scores.values())
 
@@ -1125,6 +1432,372 @@ def get_epoch_from_timestamp(timestamp: int, epoch_start: int = 0) -> int:
 
     days_since_start = (timestamp - epoch_start) // 86400
     return days_since_start
+
+
+# ============================================================================
+# POOL REWARD DISTRIBUTION
+# ============================================================================
+
+# Default operator fee (percentage kept by pool operator)
+DEFAULT_OPERATOR_FEE = 0.15  # 15%
+MAX_OPERATOR_FEE = 0.30      # 30% maximum allowed
+
+
+@dataclass
+class LenderReward:
+    """Reward entry for a single lender in a pool."""
+    lender_address: str
+    pool_address: str
+    stake_amount: float
+    stake_percentage: float   # Their share of pool's total stake
+    gross_reward: float       # Before operator fee
+    operator_fee: float       # Fee paid to operator
+    net_reward: float         # Final reward to lender
+    round_id: str
+    timestamp: int = field(default_factory=lambda: int(time.time()))
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class PoolRewardSummary:
+    """Complete reward breakdown for a pool and its lenders."""
+    pool_address: str
+    pool_score: float
+    pool_total_stake: float
+    pool_gross_reward: float
+    operator_fee_rate: float
+    operator_fee_amount: float
+    operator_net_reward: float  # Operator's own stake reward + fees
+    lender_rewards: List[LenderReward]
+    round_id: str
+    timestamp: int = field(default_factory=lambda: int(time.time()))
+
+    def to_dict(self) -> dict:
+        result = asdict(self)
+        result['lender_rewards'] = [lr.to_dict() for lr in self.lender_rewards]
+        return result
+
+
+class PoolRewardDistributor:
+    """
+    Distributes pool rewards to operator and lenders.
+
+    Pool operators make predictions on behalf of their lenders.
+    When the pool earns rewards:
+    1. Operator keeps a fee (default 15%) for running the pool
+    2. Remaining rewards distributed to lenders proportionally by stake
+
+    This creates incentive for:
+    - Operators: Run accurate predictions to attract lenders
+    - Lenders: Delegate to high-performing operators
+    - Competition: Poor operators lose lenders to better ones
+    """
+
+    def __init__(
+        self,
+        default_fee_rate: float = DEFAULT_OPERATOR_FEE,
+        lending_manager: Optional[Any] = None
+    ):
+        """
+        Initialize PoolRewardDistributor.
+
+        Args:
+            default_fee_rate: Default operator fee (0.0-0.30)
+            lending_manager: LendingManager for lender lookups
+        """
+        self.default_fee_rate = min(default_fee_rate, MAX_OPERATOR_FEE)
+        self.lending_manager = lending_manager
+        self._fee_overrides: Dict[str, float] = {}  # Pool-specific fees
+
+    def set_operator_fee(self, pool_address: str, fee_rate: float) -> bool:
+        """
+        Set custom fee rate for a specific pool.
+
+        Args:
+            pool_address: Pool operator's address
+            fee_rate: Fee rate (0.0-0.30)
+
+        Returns:
+            True if set successfully
+        """
+        if fee_rate < 0 or fee_rate > MAX_OPERATOR_FEE:
+            logger.warning(f"Invalid fee rate {fee_rate}, must be 0-{MAX_OPERATOR_FEE}")
+            return False
+
+        self._fee_overrides[pool_address] = fee_rate
+        return True
+
+    def get_operator_fee(self, pool_address: str) -> float:
+        """Get fee rate for a pool (custom or default)."""
+        return self._fee_overrides.get(pool_address, self.default_fee_rate)
+
+    def distribute_pool_reward(
+        self,
+        pool_address: str,
+        pool_score: float,
+        pool_total_reward: float,
+        lenders: List[Dict[str, Any]],
+        operator_own_stake: float = 0.0,
+        round_id: str = ""
+    ) -> PoolRewardSummary:
+        """
+        Distribute a pool's reward to operator and lenders.
+
+        Args:
+            pool_address: Pool operator's address
+            pool_score: Pool's prediction score (0-1)
+            pool_total_reward: Total reward earned by pool
+            lenders: List of {'address': str, 'stake': float}
+            operator_own_stake: Operator's own stake in the pool
+            round_id: Round identifier
+
+        Returns:
+            PoolRewardSummary with complete breakdown
+        """
+        fee_rate = self.get_operator_fee(pool_address)
+
+        # Calculate total pool stake (operator + all lenders)
+        total_lender_stake = sum(l.get('stake', 0) for l in lenders)
+        pool_total_stake = operator_own_stake + total_lender_stake
+
+        if pool_total_stake == 0:
+            logger.warning(f"Pool {pool_address} has zero stake")
+            return PoolRewardSummary(
+                pool_address=pool_address,
+                pool_score=pool_score,
+                pool_total_stake=0,
+                pool_gross_reward=pool_total_reward,
+                operator_fee_rate=fee_rate,
+                operator_fee_amount=0,
+                operator_net_reward=0,
+                lender_rewards=[],
+                round_id=round_id
+            )
+
+        # Split reward by stake proportion
+        # Operator gets: (own_stake/total_stake * reward) + fee_rate * (lender_stake/total_stake * reward)
+        lender_stake_share = total_lender_stake / pool_total_stake
+        operator_stake_share = operator_own_stake / pool_total_stake
+
+        # Rewards from lender portion
+        lender_portion = pool_total_reward * lender_stake_share
+        operator_fee_amount = lender_portion * fee_rate
+        distributable_to_lenders = lender_portion - operator_fee_amount
+
+        # Operator's own stake reward (no fee on own stake)
+        operator_own_reward = pool_total_reward * operator_stake_share
+        operator_net_reward = operator_own_reward + operator_fee_amount
+
+        # Distribute to lenders
+        lender_rewards = []
+        for lender in lenders:
+            lender_addr = lender.get('address', '')
+            lender_stake = lender.get('stake', 0)
+
+            if lender_stake <= 0 or total_lender_stake <= 0:
+                continue
+
+            # Lender's percentage of lender pool
+            lender_pct = lender_stake / total_lender_stake
+
+            # Gross (before fee), fee, and net
+            gross = lender_portion * lender_pct
+            fee = gross * fee_rate
+            net = gross - fee
+
+            lender_rewards.append(LenderReward(
+                lender_address=lender_addr,
+                pool_address=pool_address,
+                stake_amount=lender_stake,
+                stake_percentage=lender_pct,
+                gross_reward=round(gross, 8),
+                operator_fee=round(fee, 8),
+                net_reward=round(net, 8),
+                round_id=round_id
+            ))
+
+        return PoolRewardSummary(
+            pool_address=pool_address,
+            pool_score=pool_score,
+            pool_total_stake=pool_total_stake,
+            pool_gross_reward=pool_total_reward,
+            operator_fee_rate=fee_rate,
+            operator_fee_amount=round(operator_fee_amount, 8),
+            operator_net_reward=round(operator_net_reward, 8),
+            lender_rewards=lender_rewards,
+            round_id=round_id
+        )
+
+    async def get_pool_lenders(self, pool_address: str) -> List[Dict[str, Any]]:
+        """
+        Get lenders for a pool from LendingManager.
+
+        Returns:
+            List of {'address': str, 'stake': float}
+        """
+        if not self.lending_manager:
+            return []
+
+        try:
+            # Use LendingManager to get participants
+            if hasattr(self.lending_manager, 'get_pool_participants'):
+                return await self.lending_manager.get_pool_participants(pool_address)
+            elif hasattr(self.lending_manager, '_pools'):
+                # Fallback: direct access to pool data
+                pool = self.lending_manager._pools.get(pool_address, {})
+                lenders = pool.get('lenders', [])
+                return [{'address': l.get('lender_address'), 'stake': l.get('lent_out', 0)}
+                        for l in lenders]
+        except Exception as e:
+            logger.warning(f"Failed to get pool lenders: {e}")
+
+        return []
+
+
+class EnhancedRewardCalculator(RewardCalculator):
+    """
+    Extended RewardCalculator that handles pool reward distribution.
+
+    This wraps the base RewardCalculator and adds:
+    1. Pool detection (is this address a pool operator?)
+    2. Stake aggregation (pool stake = operator + all lenders)
+    3. Post-distribution to lenders via PoolRewardDistributor
+    """
+
+    def __init__(
+        self,
+        scorer: Optional[SatoriScorer] = None,
+        min_score_threshold: float = 0.0,
+        pool_distributor: Optional[PoolRewardDistributor] = None,
+        lending_manager: Optional[Any] = None
+    ):
+        super().__init__(scorer, min_score_threshold)
+        self.pool_distributor = pool_distributor or PoolRewardDistributor(
+            lending_manager=lending_manager
+        )
+        self.lending_manager = lending_manager
+        self._pool_cache: Dict[str, Dict] = {}  # Cache pool info during round
+
+    async def calculate_round_rewards_with_pools(
+        self,
+        predictions: List[PredictionInput],
+        reward_pool: float,
+        actual_value: float,
+        stream_id: str,
+        round_id: str,
+        round_start: int,
+        round_end: int,
+        epoch: int = 0,
+        node_roles: Optional[Dict[str, "NodeRoles"]] = None,
+        referral_counts: Optional[Dict[str, int]] = None,
+    ) -> Tuple[RoundSummary, List[PoolRewardSummary]]:
+        """
+        Calculate rewards with pool distribution.
+
+        Args:
+            predictions: List of predictions to score
+            reward_pool: Total SATORI to distribute
+            actual_value: Actual observed value
+            stream_id: Stream identifier
+            round_id: Round identifier
+            round_start: Round start timestamp (00:00 UTC)
+            round_end: Round end timestamp (23:59:59 UTC)
+            epoch: Epoch number
+            node_roles: Optional {address: NodeRoles} for role multipliers
+            referral_counts: Optional {address: count} for referral bonuses
+
+        Returns:
+            (RoundSummary, List[PoolRewardSummary])
+        """
+        # Gather pool stakes for diversity bonus calculation
+        pool_stakes: Dict[str, float] = {}
+        for pred in predictions:
+            address = pred.predictor_address
+            pool_info = await self._get_pool_info(address)
+            if pool_info and pool_info.get('is_pool'):
+                # Pool operator: aggregate stake from operator + lenders
+                try:
+                    lenders = await self.pool_distributor.get_pool_lenders(address)
+                    total_stake = pool_info.get('operator_stake', 0)
+                    for lender in lenders:
+                        total_stake += lender.get('amount', 0)
+                    pool_stakes[address] = total_stake
+                except Exception as e:
+                    logger.debug(f"Failed to get pool stake for {address}: {e}")
+                    # Use operator stake only as fallback
+                    pool_stakes[address] = pool_info.get('operator_stake', 0)
+
+        # Calculate base rewards with pool diversity bonus
+        round_summary = self.calculate_round_rewards(
+            predictions=predictions,
+            reward_pool=reward_pool,
+            actual_value=actual_value,
+            stream_id=stream_id,
+            round_id=round_id,
+            round_start=round_start,
+            round_end=round_end,
+            epoch=epoch,
+            node_roles=node_roles,
+            referral_counts=referral_counts,
+            pool_stakes=pool_stakes
+        )
+
+        # Now distribute pool rewards to lenders
+        pool_summaries = []
+        for reward in round_summary.rewards:
+            pool_info = await self._get_pool_info(reward.address)
+            if pool_info and pool_info.get('is_pool'):
+                # This is a pool operator - distribute to lenders
+                lenders = await self.pool_distributor.get_pool_lenders(reward.address)
+                if lenders:
+                    pool_summary = self.pool_distributor.distribute_pool_reward(
+                        pool_address=reward.address,
+                        pool_score=reward.score,
+                        pool_total_reward=reward.amount,
+                        lenders=lenders,
+                        operator_own_stake=pool_info.get('operator_stake', 0),
+                        round_id=round_id
+                    )
+                    pool_summaries.append(pool_summary)
+
+        return round_summary, pool_summaries
+
+    async def _get_pool_info(self, address: str) -> Optional[Dict]:
+        """Check if address is a pool operator."""
+        if address in self._pool_cache:
+            return self._pool_cache[address]
+
+        if not self.lending_manager:
+            return None
+
+        try:
+            if hasattr(self.lending_manager, 'is_pool_operator'):
+                is_pool = await self.lending_manager.is_pool_operator(address)
+                if is_pool:
+                    pool_data = await self.lending_manager.get_pool_config(address)
+                    info = {
+                        'is_pool': True,
+                        'operator_stake': pool_data.get('operator_stake', 0),
+                        'fee_rate': pool_data.get('worker_reward_pct', DEFAULT_OPERATOR_FEE)
+                    }
+                    self._pool_cache[address] = info
+                    return info
+            elif hasattr(self.lending_manager, '_pools'):
+                if address in self.lending_manager._pools:
+                    pool = self.lending_manager._pools[address]
+                    info = {
+                        'is_pool': True,
+                        'operator_stake': pool.get('operator_stake', 0),
+                        'fee_rate': pool.get('worker_reward_pct', DEFAULT_OPERATOR_FEE)
+                    }
+                    self._pool_cache[address] = info
+                    return info
+        except Exception as e:
+            logger.debug(f"Pool info lookup failed: {e}")
+
+        return None
 
 
 # ============================================================================

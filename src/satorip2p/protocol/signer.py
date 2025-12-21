@@ -32,6 +32,17 @@ try:
 except ImportError:
     SIGNING_AVAILABLE = False
 
+# Import python-evrmorelib for multi-sig script building
+try:
+    from evrmore.core.script import CScript, OP_CHECKMULTISIG
+    from evrmore.wallet import P2SHEvrmoreAddress
+    EVRMORELIB_AVAILABLE = True
+except ImportError:
+    EVRMORELIB_AVAILABLE = False
+    CScript = None
+    OP_CHECKMULTISIG = None
+    P2SHEvrmoreAddress = None
+
 logger = logging.getLogger("satorip2p.protocol.signer")
 
 
@@ -43,17 +54,22 @@ logger = logging.getLogger("satorip2p.protocol.signer")
 MULTISIG_THRESHOLD = 3           # 3 signatures required
 MULTISIG_TOTAL_SIGNERS = 5       # Out of 5 total signers
 
-# Placeholder signer addresses (team will replace with actual addresses)
-AUTHORIZED_SIGNERS = [
-    "PLACEHOLDER_SIGNER_ADDRESS_1",
-    "PLACEHOLDER_SIGNER_ADDRESS_2",
-    "PLACEHOLDER_SIGNER_ADDRESS_3",
-    "PLACEHOLDER_SIGNER_ADDRESS_4",
-    "PLACEHOLDER_SIGNER_ADDRESS_5",
+# Authorized signers - team will replace with actual values
+# Each signer has an address (34 chars) and pubkey (66 hex chars)
+AUTHORIZED_SIGNERS_CONFIG = [
+    {"address": "PLACEHOLDER_SIGNER_ADDRESS_1", "pubkey": "PLACEHOLDER_SIGNER_PUBKEY_1"},
+    {"address": "PLACEHOLDER_SIGNER_ADDRESS_2", "pubkey": "PLACEHOLDER_SIGNER_PUBKEY_2"},
+    {"address": "PLACEHOLDER_SIGNER_ADDRESS_3", "pubkey": "PLACEHOLDER_SIGNER_PUBKEY_3"},
+    {"address": "PLACEHOLDER_SIGNER_ADDRESS_4", "pubkey": "PLACEHOLDER_SIGNER_PUBKEY_4"},
+    {"address": "PLACEHOLDER_SIGNER_ADDRESS_5", "pubkey": "PLACEHOLDER_SIGNER_PUBKEY_5"},
 ]
 
-# Placeholder multi-sig treasury address
-TREASURY_MULTISIG_ADDRESS = "PLACEHOLDER_MULTISIG_TREASURY_ADDRESS"
+# Convenience accessors (derived from AUTHORIZED_SIGNERS_CONFIG)
+AUTHORIZED_SIGNERS = [s["address"] for s in AUTHORIZED_SIGNERS_CONFIG]
+AUTHORIZED_SIGNER_PUBKEYS = [s["pubkey"] for s in AUTHORIZED_SIGNERS_CONFIG]
+
+# Treasury address placeholder - use get_treasury_address() for auto-generation
+_TREASURY_MULTISIG_ADDRESS_CACHE: Optional[str] = None
 
 # Timing
 SIGNATURE_COLLECTION_TIMEOUT = 300  # 5 minutes to collect signatures
@@ -771,42 +787,90 @@ def verify_combined_signature(
 
 
 # ============================================================================
-# MULTI-SIG SCRIPT HELPERS
+# MULTI-SIG SCRIPT HELPERS (using python-evrmorelib)
 # ============================================================================
 
-def create_multisig_redeem_script(public_keys: List[bytes], threshold: int = 3) -> bytes:
+def create_multisig_redeem_script(
+    public_keys: List[Union[bytes, str]],
+    threshold: int = 3
+) -> Union["CScript", bytes]:
     """
-    Create a multi-sig redeem script.
+    Create a multi-sig redeem script using python-evrmorelib.
 
     Creates script: OP_M <pubkey1> ... <pubkeyN> OP_N OP_CHECKMULTISIG
 
     Args:
-        public_keys: List of compressed public keys (33 bytes each)
+        public_keys: List of compressed public keys (33 bytes each, or hex strings)
         threshold: Number of signatures required (M of N)
 
     Returns:
-        Redeem script bytes
+        CScript containing the redeem script (or raw bytes if evrmorelib unavailable)
     """
     if len(public_keys) < threshold:
         raise ValueError(f"Need at least {threshold} public keys")
 
-    # Build script manually (compatible with python-evrmorelib if available)
-    script = bytes([0x50 + threshold])  # OP_M (OP_1 = 0x51, OP_2 = 0x52, OP_3 = 0x53, etc.)
+    # Convert hex strings to bytes if needed
+    byte_keys = []
+    for key in public_keys:
+        if isinstance(key, str):
+            byte_keys.append(bytes.fromhex(key))
+        elif isinstance(key, bytes):
+            byte_keys.append(key)
+        else:
+            raise TypeError(f"Public key must be bytes or hex string, got {type(key)}")
 
-    for pubkey in public_keys:
+    # Validate key lengths
+    for pubkey in byte_keys:
         if len(pubkey) != 33:
             raise ValueError(f"Public key must be 33 bytes (compressed), got {len(pubkey)}")
+
+    # Use python-evrmorelib if available
+    if EVRMORELIB_AVAILABLE and CScript is not None:
+        return CScript([threshold] + byte_keys + [len(byte_keys), OP_CHECKMULTISIG])
+
+    # Fallback to manual construction
+    script = bytes([0x50 + threshold])  # OP_M
+    for pubkey in byte_keys:
         script += bytes([len(pubkey)]) + pubkey
-
-    script += bytes([0x50 + len(public_keys)])  # OP_N
+    script += bytes([0x50 + len(byte_keys)])  # OP_N
     script += bytes([0xae])  # OP_CHECKMULTISIG
-
     return script
+
+
+def create_multisig_address(
+    public_keys: List[Union[bytes, str]],
+    threshold: int = 3
+) -> str:
+    """
+    Create a P2SH multi-sig address from public keys.
+
+    This is the main function for generating a treasury address from signer public keys.
+
+    Args:
+        public_keys: List of compressed public keys (33 bytes each, or hex strings)
+        threshold: Number of signatures required (M of N)
+
+    Returns:
+        P2SH address string (Evrmore format, starts with 'e')
+
+    Example:
+        >>> pubkeys = [signer1_pubkey, signer2_pubkey, signer3_pubkey, signer4_pubkey, signer5_pubkey]
+        >>> treasury_address = create_multisig_address(pubkeys, threshold=3)
+        >>> print(treasury_address)  # 'eXxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+    """
+    if not EVRMORELIB_AVAILABLE:
+        raise ImportError("python-evrmorelib required for P2SH address generation. Install with: pip install python-evrmorelib")
+
+    # Create the redeem script
+    redeem_script = create_multisig_redeem_script(public_keys, threshold)
+
+    # Generate P2SH address from redeem script
+    return str(P2SHEvrmoreAddress.from_redeemScript(redeem_script))
 
 
 def create_multisig_scriptsig(
     signatures: List[bytes],
-    redeem_script: bytes
+    redeem_script: Union["CScript", bytes]
 ) -> bytes:
     """
     Create a scriptSig for spending from a multi-sig P2SH address.
@@ -820,6 +884,10 @@ def create_multisig_scriptsig(
     Returns:
         scriptSig bytes
     """
+    # Convert CScript to bytes if needed
+    if hasattr(redeem_script, '__bytes__'):
+        redeem_script = bytes(redeem_script)
+
     # OP_0 (required due to CHECKMULTISIG off-by-one bug)
     script = bytes([0x00])
 
@@ -875,7 +943,37 @@ def get_treasury_address() -> str:
     """
     Get the treasury multi-sig address.
 
+    Auto-generates from AUTHORIZED_SIGNER_PUBKEYS if they are configured.
+    Returns placeholder if pubkeys are still placeholders.
+
     Returns:
         Treasury address string
     """
-    return TREASURY_MULTISIG_ADDRESS
+    global _TREASURY_MULTISIG_ADDRESS_CACHE
+
+    # Return cached value if available
+    if _TREASURY_MULTISIG_ADDRESS_CACHE is not None:
+        return _TREASURY_MULTISIG_ADDRESS_CACHE
+
+    # Check if pubkeys are still placeholders
+    if any(pk.startswith("PLACEHOLDER") for pk in AUTHORIZED_SIGNER_PUBKEYS):
+        return "PLACEHOLDER_MULTISIG_TREASURY_ADDRESS"
+
+    # Check if evrmorelib is available
+    if not EVRMORELIB_AVAILABLE:
+        logger.warning("python-evrmorelib not available, cannot auto-generate treasury address")
+        return "PLACEHOLDER_MULTISIG_TREASURY_ADDRESS"
+
+    try:
+        # Auto-generate from pubkeys
+        address = create_multisig_address(AUTHORIZED_SIGNER_PUBKEYS, MULTISIG_THRESHOLD)
+        _TREASURY_MULTISIG_ADDRESS_CACHE = address
+        logger.info(f"Auto-generated treasury address: {address}")
+        return address
+    except Exception as e:
+        logger.warning(f"Failed to generate treasury address: {e}")
+        return "PLACEHOLDER_MULTISIG_TREASURY_ADDRESS"
+
+
+# Backward compatibility alias
+TREASURY_MULTISIG_ADDRESS = "PLACEHOLDER_MULTISIG_TREASURY_ADDRESS"  # Use get_treasury_address() instead

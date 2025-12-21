@@ -13,6 +13,9 @@ import uuid
 
 logger = logging.getLogger("satorip2p.protocol.messages")
 
+# Current protocol version (imported from config to avoid circular import)
+PROTOCOL_VERSION = "1.0.0"
+
 
 def serialize_message(message: Any) -> bytes:
     """
@@ -130,6 +133,7 @@ def create_message(
     stream_id: Optional[str] = None,
     is_subscription: bool = False,
     request_id: Optional[str] = None,
+    protocol_version: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a standardized Satori P2P message.
@@ -143,6 +147,7 @@ def create_message(
         stream_id: Associated stream UUID
         is_subscription: Whether this is a subscription message
         request_id: Request ID for request/response correlation
+        protocol_version: Protocol version (defaults to current)
 
     Returns:
         Message dictionary ready for serialization
@@ -150,6 +155,7 @@ def create_message(
     return {
         "id": request_id or str(uuid.uuid4()),
         "method": method,
+        "protocol_version": protocol_version or PROTOCOL_VERSION,
         "params": {
             "uuid": stream_id,
             **(params or {}),
@@ -166,6 +172,7 @@ def create_response(
     data: Any = None,
     message: Optional[str] = None,
     stream_id: Optional[str] = None,
+    protocol_version: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a response message.
@@ -176,6 +183,7 @@ def create_response(
         data: Response payload
         message: Human-readable status message
         stream_id: Associated stream UUID
+        protocol_version: Protocol version (defaults to current)
 
     Returns:
         Response message dictionary
@@ -183,6 +191,7 @@ def create_response(
     return {
         "id": request_id,
         "status": status,
+        "protocol_version": protocol_version or PROTOCOL_VERSION,
         "message": message,
         "params": {"uuid": stream_id} if stream_id else {},
         "data": data,
@@ -195,6 +204,7 @@ def create_subscription_announce(
     peer_id: str,
     evrmore_address: str,
     is_publisher: bool = False,
+    protocol_version: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a subscription announcement message.
@@ -206,12 +216,14 @@ def create_subscription_announce(
         peer_id: libp2p peer ID
         evrmore_address: Evrmore wallet address
         is_publisher: True if announcing as publisher
+        protocol_version: Protocol version (defaults to current)
 
     Returns:
         Announcement message dictionary
     """
     return {
         "type": "subscription_announce",
+        "protocol_version": protocol_version or PROTOCOL_VERSION,
         "stream_id": stream_id,
         "peer_id": peer_id,
         "evrmore_address": evrmore_address,
@@ -229,6 +241,9 @@ def create_peer_announce(
     is_relay: bool = False,
     subscriptions: Optional[list] = None,
     publications: Optional[list] = None,
+    protocol_version: Optional[str] = None,
+    supported_versions: Optional[list] = None,
+    capabilities: Optional[list] = None,
 ) -> Dict[str, Any]:
     """
     Create a peer announcement message.
@@ -244,12 +259,17 @@ def create_peer_announce(
         is_relay: Whether this peer can act as a relay
         subscriptions: List of subscribed stream IDs
         publications: List of published stream IDs
+        protocol_version: Current protocol version
+        supported_versions: List of all supported versions
+        capabilities: List of capabilities/features
 
     Returns:
         Announcement message dictionary
     """
     return {
         "type": "peer_announce",
+        "protocol_version": protocol_version or PROTOCOL_VERSION,
+        "supported_versions": supported_versions or [PROTOCOL_VERSION],
         "peer_info": {
             "peer_id": peer_id,
             "evrmore_address": evrmore_address,
@@ -257,6 +277,7 @@ def create_peer_announce(
             "addresses": addresses,
             "nat_type": nat_type,
             "is_relay": is_relay,
+            "capabilities": capabilities or [],
         },
         "subscriptions": subscriptions or [],
         "publications": publications or [],

@@ -849,18 +849,77 @@ class P2PSatoriServerClient:
         return {}
 
     def getBalances(self) -> tuple:
-        """Get balances from server."""
+        """
+        Get balances via ElectrumX (P2P) or central server.
+
+        Returns:
+            Tuple of (success, balance_dict) with:
+            - currency: EVR balance
+            - chain_balance: SATORI balance
+        """
+        # Try P2P first via ElectrumX (wallet has direct blockchain access)
+        if self.wallet and self._mode in (NetworkingMode.HYBRID, NetworkingMode.P2P_ONLY):
+            try:
+                # Ensure electrumx connection
+                if hasattr(self.wallet, 'electrumx') and self.wallet.electrumx:
+                    if not self.wallet.electrumx.connected():
+                        # Try to connect
+                        if hasattr(self.wallet, 'connect'):
+                            self.wallet.connect()
+
+                    if self.wallet.electrumx.connected():
+                        # Get fresh balances from blockchain
+                        self.wallet.getBalances()
+
+                        evr_balance = 0.0
+                        satori_balance = 0.0
+
+                        if hasattr(self.wallet, 'currency') and self.wallet.currency:
+                            evr_balance = self.wallet.currency.amount if hasattr(self.wallet.currency, 'amount') else 0.0
+
+                        if hasattr(self.wallet, 'balance') and self.wallet.balance:
+                            satori_balance = self.wallet.balance.amount if hasattr(self.wallet.balance, 'amount') else 0.0
+
+                        return True, {
+                            'currency': evr_balance,
+                            'chain_balance': satori_balance,
+                        }
+            except Exception as e:
+                logger.warning(f"P2P getBalances via ElectrumX failed: {e}")
+                if self._mode == NetworkingMode.P2P_ONLY:
+                    return False, {'currency': 0, 'chain_balance': 0, 'error': str(e)}
+
+        # Fallback to central
         if self._central_client:
             try:
                 return self._central_client.getBalances()
             except Exception as e:
                 logger.warning(f"Central getBalances failed: {e}")
 
-        # Return empty balances in P2P mode
-        return True, {'currency': 0, 'chain_balance': 0}
+        return False, {'currency': 0, 'chain_balance': 0}
 
     def stakeCheck(self) -> bool:
-        """Check stake status."""
+        """
+        Check if user has sufficient stake to earn rewards.
+
+        Returns:
+            True if SATORI balance >= 50 (minimum stake requirement)
+        """
+        MIN_STAKE_THRESHOLD = 50.0  # Must have 50+ SATORI to earn rewards
+
+        # Try P2P first - check wallet balance directly
+        if self.wallet and self._mode in (NetworkingMode.HYBRID, NetworkingMode.P2P_ONLY):
+            try:
+                success, balances = self.getBalances()
+                if success:
+                    satori_balance = balances.get('chain_balance', 0)
+                    return satori_balance >= MIN_STAKE_THRESHOLD
+            except Exception as e:
+                logger.warning(f"P2P stakeCheck failed: {e}")
+                if self._mode == NetworkingMode.P2P_ONLY:
+                    return False
+
+        # Fallback to central
         if self._central_client:
             try:
                 return self._central_client.stakeCheck()
@@ -876,13 +935,62 @@ class P2PSatoriServerClient:
             except Exception:
                 pass
 
-    def setRewardAddress(self, signature: str, pubkey: str, address: str):
-        """Set reward address."""
+    def setRewardAddress(self, signature: str, pubkey: str, address: str, memo: str = ""):
+        """
+        Set custom reward/payout address via P2P or central.
+
+        In P2P mode: Uses RewardAddressManager to store in DHT and broadcast.
+        Enables cold wallet, paper wallet, or hardware wallet payouts.
+
+        Args:
+            signature: Wallet signature proving ownership
+            pubkey: Public key for verification
+            address: Custom payout address
+            memo: Optional description (e.g., "Cold wallet")
+
+        Returns:
+            Result of operation or None
+        """
+        # Try P2P first
+        if self._mode != NetworkingMode.CENTRAL and self._reward_address_manager:
+            try:
+                import asyncio
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor() as pool:
+                        future = pool.submit(
+                            asyncio.run,
+                            self._reward_address_manager.set_reward_address(
+                                payout_address=address,
+                                memo=memo,
+                            )
+                        )
+                        result = future.result(timeout=10)
+                else:
+                    result = loop.run_until_complete(
+                        self._reward_address_manager.set_reward_address(
+                            payout_address=address,
+                            memo=memo,
+                        )
+                    )
+
+                if result:
+                    logger.info(f"P2P: Set reward address to {address[:12]}...")
+                    return {'success': True, 'record': result.to_dict()}
+            except Exception as e:
+                logger.warning(f"P2P setRewardAddress failed: {e}")
+                if self._mode == NetworkingMode.P2P_ONLY:
+                    return {'success': False, 'error': str(e)}
+
+        # Fallback to central
         if self._central_client:
             try:
                 return self._central_client.setRewardAddress(signature, pubkey, address)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Central setRewardAddress failed: {e}")
+
+        return None
 
     def setDataManagerPort(self, port: Optional[int]):
         """Set data manager port."""
@@ -902,28 +1010,161 @@ class P2PSatoriServerClient:
         return False
 
     def getPublicIp(self):
-        """Get public IP."""
+        """
+        Get public IP address.
+
+        In P2P mode: Uses AutoNAT - other peers report what address they see us as.
+        In hybrid/central mode: Falls back to central server.
+
+        Returns:
+            Response object with .text containing the IP address
+        """
+        class IpResponse:
+            def __init__(self, ip: str):
+                self.text = ip
+
+        # Try P2P first (AutoNAT)
+        if self._mode in (NetworkingMode.HYBRID, NetworkingMode.P2P_ONLY):
+            if self._p2p_peers:
+                try:
+                    # Use AutoNAT to get public addresses
+                    import asyncio
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        # Create task for async call
+                        import concurrent.futures
+                        with concurrent.futures.ThreadPoolExecutor() as pool:
+                            future = pool.submit(
+                                asyncio.run,
+                                self._p2p_peers.get_public_addrs_autonat()
+                            )
+                            public_addrs = future.result(timeout=5)
+                    else:
+                        public_addrs = loop.run_until_complete(
+                            self._p2p_peers.get_public_addrs_autonat()
+                        )
+
+                    if public_addrs:
+                        # Extract IP from multiaddr like /ip4/1.2.3.4/tcp/4001
+                        for addr in public_addrs:
+                            if '/ip4/' in addr:
+                                parts = addr.split('/')
+                                for i, part in enumerate(parts):
+                                    if part == 'ip4' and i + 1 < len(parts):
+                                        ip = parts[i + 1]
+                                        if ip and ip != '0.0.0.0' and ip != '127.0.0.1':
+                                            logger.debug(f"Public IP from AutoNAT: {ip}")
+                                            return IpResponse(ip)
+                except Exception as e:
+                    logger.debug(f"AutoNAT public IP lookup failed: {e}")
+
+        # Fallback to central server
         if self._central_client:
             try:
                 return self._central_client.getPublicIp()
             except Exception:
                 pass
 
-        # Return a mock response
-        class MockResponse:
-            text = "0.0.0.0"
-        return MockResponse()
+        # Last resort: return 0.0.0.0
+        return IpResponse("0.0.0.0")
 
     def invitedBy(self, address: str):
-        """Report invited by."""
+        """
+        Register referral - report who invited this user.
+
+        In P2P mode: Uses ReferralManager to store in DHT and broadcast.
+        Referrers earn tier bonuses based on total referral count:
+        - Bronze (5): +2%
+        - Silver (25): +5%
+        - Gold (100): +8%
+        - Platinum (500): +12%
+        - Diamond (2000): +15%
+
+        Args:
+            address: Address of the referrer who invited this user
+
+        Returns:
+            Result of operation or None
+        """
+        # Try P2P first
+        if self._mode != NetworkingMode.CENTRAL and self._referral_manager:
+            try:
+                import asyncio
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor() as pool:
+                        future = pool.submit(
+                            asyncio.run,
+                            self._referral_manager.register_referral(
+                                referrer_address=address
+                            )
+                        )
+                        result = future.result(timeout=10)
+                else:
+                    result = loop.run_until_complete(
+                        self._referral_manager.register_referral(
+                            referrer_address=address
+                        )
+                    )
+
+                if result:
+                    logger.info(f"P2P: Registered referral by {address[:12]}...")
+                    return {'success': True, 'referral': result.to_dict()}
+            except Exception as e:
+                logger.warning(f"P2P invitedBy failed: {e}")
+                if self._mode == NetworkingMode.P2P_ONLY:
+                    return {'success': False, 'error': str(e)}
+
+        # Fallback to central
         if self._central_client:
             try:
                 return self._central_client.invitedBy(address)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Central invitedBy failed: {e}")
+
+        return None
 
     def poolAccepting(self, status: bool) -> tuple:
-        """Set pool accepting status."""
+        """
+        Set pool accepting status via P2P (broadcast + DHT) or central.
+
+        Args:
+            status: True to accept lenders, False to stop accepting
+
+        Returns:
+            Tuple of (success, result_dict)
+        """
+        # Try P2P first
+        if self._lending_manager and self._mode in (NetworkingMode.HYBRID, NetworkingMode.P2P_ONLY):
+            try:
+                vault_address = self.wallet.address if self.wallet else ""
+                vault_pubkey = self.wallet.pubkey if self.wallet and hasattr(self.wallet, 'pubkey') else ""
+
+                if status:
+                    # Register as accepting lenders
+                    result = asyncio.get_event_loop().run_until_complete(
+                        self._lending_manager.register_pool(
+                            vault_address=vault_address,
+                            vault_pubkey=vault_pubkey,
+                        )
+                    )
+                else:
+                    # Unregister (stop accepting)
+                    result = asyncio.get_event_loop().run_until_complete(
+                        self._lending_manager.unregister_pool(
+                            vault_address=vault_address,
+                        )
+                    )
+
+                success, message = result
+                return success, {'status': status, 'message': message}
+            except Exception as e:
+                logger.warning(f"P2P poolAccepting failed: {e}")
+                if self._mode == NetworkingMode.P2P_ONLY:
+                    return False, {'error': str(e)}
+
+        # Fallback to central
         if self._central_client:
             try:
                 return self._central_client.poolAccepting(status)
@@ -931,32 +1172,140 @@ class P2PSatoriServerClient:
                 pass
         return False, None
 
-    def getSearchStreams(self, searchText: Optional[str] = None):
-        """Search streams."""
+    def getSearchStreams(
+        self,
+        searchText: Optional[str] = None,
+        search_mode: str = 'local'
+    ) -> List[Dict]:
+        """
+        Search streams via P2P (local cache or network) or central.
+
+        Args:
+            searchText: Search query (matches source, stream name, target, tags)
+            search_mode: 'local' (fast, cached streams) or 'network' (comprehensive)
+
+        Returns:
+            List of matching stream definitions
+        """
+        results = []
+
+        # Try P2P first
+        if self._stream_registry and self._mode in (NetworkingMode.HYBRID, NetworkingMode.P2P_ONLY):
+            try:
+                if search_mode == 'local':
+                    # Fast local search through cached streams
+                    results = self._search_streams_local(searchText)
+                else:
+                    # Network search via DHT discovery
+                    results = asyncio.get_event_loop().run_until_complete(
+                        self._search_streams_network(searchText)
+                    )
+
+                if results:
+                    return results
+            except Exception as e:
+                logger.warning(f"P2P getSearchStreams failed: {e}")
+                if self._mode == NetworkingMode.P2P_ONLY:
+                    return results
+
+        # Fallback to central
         if self._central_client:
             try:
                 return self._central_client.getSearchStreams(searchText)
             except Exception:
                 pass
-        return []
+        return results
+
+    def _search_streams_local(self, searchText: Optional[str] = None) -> List[Dict]:
+        """
+        Search through locally cached/discovered streams (fast).
+
+        Args:
+            searchText: Search query
+
+        Returns:
+            List of matching stream dicts
+        """
+        if not self._stream_registry:
+            return []
+
+        # Get all cached streams
+        all_streams = []
+        if hasattr(self._stream_registry, '_streams'):
+            all_streams = list(self._stream_registry._streams.values())
+
+        if not searchText:
+            return [s.to_dict() if hasattr(s, 'to_dict') else s for s in all_streams[:100]]
+
+        # Simple text matching
+        search_lower = searchText.lower()
+        matches = []
+        for stream in all_streams:
+            stream_dict = stream.to_dict() if hasattr(stream, 'to_dict') else stream
+            searchable = f"{stream_dict.get('source', '')} {stream_dict.get('stream', '')} {stream_dict.get('target', '')} {' '.join(stream_dict.get('tags', []))}".lower()
+            if search_lower in searchable:
+                matches.append(stream_dict)
+
+        return matches[:100]
+
+    async def _search_streams_network(self, searchText: Optional[str] = None) -> List[Dict]:
+        """
+        Search streams via P2P network (comprehensive but slower).
+
+        Args:
+            searchText: Search query
+
+        Returns:
+            List of matching stream dicts
+        """
+        if not self._stream_registry:
+            return []
+
+        # Use stream registry's discover method
+        streams = await self._stream_registry.discover_streams(
+            source=searchText,  # Try as source filter
+            limit=100
+        )
+
+        return [s.to_dict() if hasattr(s, 'to_dict') else s for s in streams]
 
     def getSearchStreamsPaginated(self, **kwargs) -> tuple:
-        """Search streams with pagination."""
-        if self._central_client:
-            try:
-                return self._central_client.getSearchStreamsPaginated(**kwargs)
-            except Exception:
-                pass
-        return [], 0
+        """
+        Search streams with pagination.
+
+        Supports both P2P (local/network) and central search.
+        """
+        search_text = kwargs.get('searchText') or kwargs.get('search')
+        page = kwargs.get('page', 0)
+        limit = kwargs.get('limit', 20)
+        search_mode = kwargs.get('search_mode', 'local')
+
+        # Get all results from P2P search
+        all_results = self.getSearchStreams(search_text, search_mode=search_mode)
+
+        # Paginate
+        start = page * limit
+        end = start + limit
+        paginated = all_results[start:end]
+
+        return paginated, len(all_results)
 
     def getSearchPredictionStreamsPaginated(self, **kwargs) -> tuple:
-        """Search prediction streams with pagination."""
-        if self._central_client:
-            try:
-                return self._central_client.getSearchPredictionStreamsPaginated(**kwargs)
-            except Exception:
-                pass
-        return [], 0
+        """
+        Search prediction streams with pagination.
+
+        Filters streams that are prediction-capable.
+        """
+        results, total = self.getSearchStreamsPaginated(**kwargs)
+
+        # Filter to prediction streams only (have 'prediction' in tags or datatype)
+        prediction_streams = [
+            s for s in results
+            if 'prediction' in str(s.get('tags', [])).lower() or
+               'prediction' in str(s.get('datatype', '')).lower()
+        ]
+
+        return prediction_streams, len(prediction_streams)
 
     # ========================================================================
     # P2P MANAGERS (set externally by Neuron/Engine initialization)
@@ -965,6 +1314,8 @@ class P2PSatoriServerClient:
     _lending_manager = None
     _delegation_manager = None
     _oracle_network = None
+    _reward_address_manager = None
+    _referral_manager = None
 
     def set_lending_manager(self, manager):
         """Set the P2P lending manager."""
@@ -977,6 +1328,14 @@ class P2PSatoriServerClient:
     def set_oracle_network(self, oracle):
         """Set the P2P oracle network."""
         self._oracle_network = oracle
+
+    def set_reward_address_manager(self, manager):
+        """Set the P2P reward address manager."""
+        self._reward_address_manager = manager
+
+    def set_referral_manager(self, manager):
+        """Set the P2P referral manager."""
+        self._referral_manager = manager
 
     # ========================================================================
     # OBSERVATION METHODS (P2P-first)
@@ -1378,6 +1737,700 @@ class P2PSatoriServerClient:
             except Exception:
                 pass
         return (False, "Failed to remove proxy child")
+
+    # ========================================================================
+    # DONATION METHODS (Treasury EVR Donations)
+    # ========================================================================
+
+    _donation_manager = None
+
+    def set_donation_manager(self, manager):
+        """Set the P2P donation manager."""
+        self._donation_manager = manager
+
+    def donateToTreasury(self, amount: float) -> Dict:
+        """
+        Donate EVR to the treasury.
+
+        Sends EVR from neuron wallet to treasury multi-sig address.
+        Returns donation record with estimated SATORI reward.
+
+        Args:
+            amount: EVR amount to donate
+
+        Returns:
+            Dict with donation details or error
+        """
+        if self._mode != NetworkingMode.CENTRAL and self._donation_manager:
+            try:
+                import asyncio
+                donation = asyncio.get_event_loop().run_until_complete(
+                    self._donation_manager.donate(amount)
+                )
+                return {
+                    'success': True,
+                    'donation': donation.to_dict(),
+                    'message': f'Donated {amount} EVR to treasury',
+                }
+            except Exception as e:
+                logger.warning(f"P2P donateToTreasury failed: {e}")
+                return {'success': False, 'error': str(e)}
+
+        if self._central_client:
+            try:
+                # Central fallback would go here if implemented
+                return self._central_client.donateToTreasury(amount)
+            except AttributeError:
+                pass
+            except Exception as e:
+                logger.warning(f"Central donateToTreasury failed: {e}")
+
+        return {'success': False, 'error': 'Donation manager not available'}
+
+    def getDonationHistory(self) -> List[Dict]:
+        """
+        Get donation history for this neuron.
+
+        Returns:
+            List of donation records
+        """
+        if self._mode != NetworkingMode.CENTRAL and self._donation_manager:
+            try:
+                import asyncio
+                donations = asyncio.get_event_loop().run_until_complete(
+                    self._donation_manager.get_my_donations()
+                )
+                return [d.to_dict() for d in donations]
+            except Exception as e:
+                logger.warning(f"P2P getDonationHistory failed: {e}")
+
+        if self._central_client:
+            try:
+                return self._central_client.getDonationHistory()
+            except AttributeError:
+                pass
+            except Exception as e:
+                logger.warning(f"Central getDonationHistory failed: {e}")
+
+        return []
+
+    def getDonorStats(self) -> Dict:
+        """
+        Get cumulative donation statistics for this neuron.
+
+        Returns:
+            Dict with total_donated, tier, badges_earned, etc.
+        """
+        if self._mode != NetworkingMode.CENTRAL and self._donation_manager:
+            try:
+                import asyncio
+                stats = asyncio.get_event_loop().run_until_complete(
+                    self._donation_manager.get_my_stats()
+                )
+                return stats.to_dict()
+            except Exception as e:
+                logger.warning(f"P2P getDonorStats failed: {e}")
+
+        if self._central_client:
+            try:
+                return self._central_client.getDonorStats()
+            except AttributeError:
+                pass
+            except Exception as e:
+                logger.warning(f"Central getDonorStats failed: {e}")
+
+        return {
+            'donor_address': self.wallet.address if self.wallet else '',
+            'total_donated': 0.0,
+            'donation_count': 0,
+            'tier': 'none',
+            'badges_earned': [],
+        }
+
+    def getTreasuryAddress(self) -> str:
+        """Get the treasury multi-sig address."""
+        if self._donation_manager:
+            return self._donation_manager.get_treasury_address()
+
+        # Fallback to protocol constant
+        try:
+            from ..protocol.signer import get_treasury_address
+            return get_treasury_address()
+        except ImportError:
+            return ''
+
+    def getTopDonors(self, limit: int = 10) -> List[Dict]:
+        """
+        Get top donors by total donated.
+
+        Args:
+            limit: Number of top donors to return
+
+        Returns:
+            List of donor stats
+        """
+        if self._donation_manager:
+            try:
+                import asyncio
+                donors = asyncio.get_event_loop().run_until_complete(
+                    self._donation_manager.get_top_donors(limit)
+                )
+                return [d.to_dict() for d in donors]
+            except Exception as e:
+                logger.warning(f"getTopDonors failed: {e}")
+
+        return []
+
+    # ========================================================================
+    # SIGNER METHODS (Multi-sig Administration)
+    # ========================================================================
+
+    _signer_node = None
+
+    def set_signer_node(self, signer):
+        """Set the P2P signer node."""
+        self._signer_node = signer
+
+    def isAuthorizedSigner(self) -> bool:
+        """Check if this neuron is an authorized signer."""
+        try:
+            from ..protocol.signer import is_authorized_signer
+            return is_authorized_signer(self.wallet.address if self.wallet else '')
+        except ImportError:
+            return False
+
+    def getSignerPendingRequests(self) -> List[Dict]:
+        """
+        Get pending signature requests (signers only).
+
+        Returns:
+            List of pending signature requests awaiting this signer's signature
+        """
+        if not self.isAuthorizedSigner():
+            return []
+
+        if self._signer_node:
+            try:
+                import asyncio
+                requests = asyncio.get_event_loop().run_until_complete(
+                    self._signer_node.get_pending_requests()
+                )
+                return [r.to_dict() for r in requests]
+            except Exception as e:
+                logger.warning(f"getSignerPendingRequests failed: {e}")
+
+        return []
+
+    def approveSignerRequest(self, request_id: str) -> Dict:
+        """
+        Approve and sign a pending request (signers only).
+
+        Args:
+            request_id: ID of the request to approve
+
+        Returns:
+            Dict with result status
+        """
+        if not self.isAuthorizedSigner():
+            return {'success': False, 'error': 'Not an authorized signer'}
+
+        if self._signer_node:
+            try:
+                import asyncio
+                result = asyncio.get_event_loop().run_until_complete(
+                    self._signer_node.approve_request(request_id)
+                )
+                return {
+                    'success': True,
+                    'result': result.to_dict() if hasattr(result, 'to_dict') else result,
+                    'message': f'Approved request {request_id}',
+                }
+            except Exception as e:
+                logger.warning(f"approveSignerRequest failed: {e}")
+                return {'success': False, 'error': str(e)}
+
+        return {'success': False, 'error': 'Signer node not available'}
+
+    def rejectSignerRequest(self, request_id: str) -> Dict:
+        """
+        Reject a pending request (signers only).
+
+        Args:
+            request_id: ID of the request to reject
+
+        Returns:
+            Dict with result status
+        """
+        if not self.isAuthorizedSigner():
+            return {'success': False, 'error': 'Not an authorized signer'}
+
+        if self._signer_node:
+            try:
+                import asyncio
+                result = asyncio.get_event_loop().run_until_complete(
+                    self._signer_node.reject_request(request_id)
+                )
+                return {
+                    'success': result,
+                    'message': f'Rejected request {request_id}' if result else 'Failed to reject',
+                }
+            except Exception as e:
+                logger.warning(f"rejectSignerRequest failed: {e}")
+                return {'success': False, 'error': str(e)}
+
+        return {'success': False, 'error': 'Signer node not available'}
+
+    def getSignerRequestStatus(self, request_id: str) -> Dict:
+        """
+        Get status of a signature request.
+
+        Args:
+            request_id: ID of the request
+
+        Returns:
+            Dict with request status including signature count
+        """
+        if self._signer_node:
+            try:
+                import asyncio
+                status = asyncio.get_event_loop().run_until_complete(
+                    self._signer_node.get_request_status(request_id)
+                )
+                return status
+            except Exception as e:
+                logger.warning(f"getSignerRequestStatus failed: {e}")
+
+        return {'error': 'Status not available'}
+
+    def getTreasuryBalance(self) -> Dict:
+        """
+        Get treasury balance (EVR and SATORI).
+
+        Returns:
+            Dict with balance information
+        """
+        if self._donation_manager:
+            try:
+                import asyncio
+                evr_balance = asyncio.get_event_loop().run_until_complete(
+                    self._donation_manager.get_treasury_balance()
+                )
+                return {
+                    'evr': evr_balance,
+                    'treasury_address': self._donation_manager.get_treasury_address(),
+                }
+            except Exception as e:
+                logger.warning(f"getTreasuryBalance failed: {e}")
+
+        return {'evr': 0.0, 'satori': 0.0}
+
+    # ========================================================================
+    # TREASURY ALERT METHODS (Edge case handling)
+    # ========================================================================
+
+    _alert_manager = None
+    _deferred_rewards_manager = None
+    _alert_callbacks: List[Callable] = []
+
+    def set_alert_manager(self, manager):
+        """Set the treasury alert manager."""
+        self._alert_manager = manager
+        # Register local callbacks with manager
+        if manager:
+            for callback in self._alert_callbacks:
+                manager.on_alert(callback)
+
+    def set_deferred_rewards_manager(self, manager):
+        """Set the deferred rewards manager."""
+        self._deferred_rewards_manager = manager
+
+    def on_treasury_alert(self, callback: Callable) -> None:
+        """
+        Register a callback for treasury alerts.
+
+        The callback receives a TreasuryAlert dict when alerts are broadcast.
+        """
+        self._alert_callbacks.append(callback)
+        if self._alert_manager:
+            self._alert_manager.on_alert(callback)
+
+    def getTreasuryAlertStatus(self) -> Dict:
+        """
+        Get current treasury alert status.
+
+        Returns:
+            Dict with status, balances, active alerts, deferred info
+        """
+        if self._alert_manager:
+            try:
+                return self._alert_manager.get_status_summary()
+            except Exception as e:
+                logger.warning(f"getTreasuryAlertStatus failed: {e}")
+
+        # Fallback to central
+        if self._central_client:
+            try:
+                success, data = self._central_client.getTreasuryAlertStatus()
+                if success:
+                    return data
+            except Exception:
+                pass
+
+        return {
+            'status': 'unknown',
+            'satori_balance': 0.0,
+            'evr_balance': 0.0,
+            'active_alerts': [],
+            'deferred_rounds': 0,
+            'total_deferred_rewards': 0.0,
+            'last_successful_distribution': None,
+        }
+
+    def getDeferredRewards(self) -> Dict:
+        """
+        Get current user's deferred rewards.
+
+        Returns:
+            Dict with deferred reward info for this wallet
+        """
+        address = self.wallet.address if self.wallet else ""
+
+        if self._deferred_rewards_manager and address:
+            try:
+                summary = self._deferred_rewards_manager.get_deferred_for_address(address)
+                return summary.to_dict()
+            except Exception as e:
+                logger.warning(f"getDeferredRewards failed: {e}")
+
+        # Fallback to central
+        if self._central_client:
+            try:
+                success, data = self._central_client.getDeferredRewards()
+                if success:
+                    return data
+            except Exception:
+                pass
+
+        return {
+            'address': address,
+            'total_pending': 0.0,
+            'deferred_count': 0,
+            'deferred_rewards': [],
+            'oldest_deferred_at': None,
+            'newest_deferred_at': None,
+        }
+
+    def getDeferredRewardsTotal(self) -> Dict:
+        """
+        Get network-wide deferred rewards total.
+
+        Returns:
+            Dict with total deferred amount and count
+        """
+        if self._deferred_rewards_manager:
+            try:
+                stats = self._deferred_rewards_manager.get_stats()
+                return stats
+            except Exception as e:
+                logger.warning(f"getDeferredRewardsTotal failed: {e}")
+
+        # Fallback to central
+        if self._central_client:
+            try:
+                success, data = self._central_client.getDeferredRewardsTotal()
+                if success:
+                    return data
+            except Exception:
+                pass
+
+        return {
+            'total_deferred': 0.0,
+            'deferred_count': 0,
+            'unique_addresses': 0,
+            'deferred_rounds': 0,
+        }
+
+    def getAlertHistory(self, limit: int = 20) -> List[Dict]:
+        """
+        Get treasury alert history.
+
+        Args:
+            limit: Max alerts to return
+
+        Returns:
+            List of historical alerts
+        """
+        if self._alert_manager:
+            try:
+                history = self._alert_manager.get_alert_history(limit)
+                return [
+                    {
+                        'alert': entry.alert.to_dict(),
+                        'resolved_at': entry.resolved_at,
+                        'resolution': entry.resolution,
+                    }
+                    for entry in history
+                ]
+            except Exception as e:
+                logger.warning(f"getAlertHistory failed: {e}")
+
+        # Fallback to central
+        if self._central_client:
+            try:
+                success, data = self._central_client.getAlertHistory(limit)
+                if success:
+                    return data
+            except Exception:
+                pass
+
+        return []
+
+    async def checkTreasuryAndAlert(
+        self,
+        required_satori: float,
+        recipient_count: int = 100,
+    ) -> Dict:
+        """
+        Check treasury status and broadcast alerts if needed.
+
+        This is called before distribution to check if treasury has sufficient
+        funds. If not, it broadcasts appropriate alerts.
+
+        Args:
+            required_satori: SATORI needed for distribution
+            recipient_count: Number of recipients
+
+        Returns:
+            Dict with treasury status and any alerts
+        """
+        if self._alert_manager:
+            try:
+                status = await self._alert_manager.check_treasury_status(
+                    required_satori=required_satori,
+                    recipient_count=recipient_count,
+                )
+                return status.to_dict()
+            except Exception as e:
+                logger.warning(f"checkTreasuryAndAlert failed: {e}")
+                return {'status': 'error', 'error': str(e)}
+
+        return {'status': 'unknown', 'error': 'Alert manager not available'}
+
+    def shouldDeferDistribution(
+        self,
+        required_satori: float,
+        required_evr: float,
+    ) -> tuple:
+        """
+        Check if distribution should be deferred.
+
+        Args:
+            required_satori: SATORI needed
+            required_evr: EVR needed for fees
+
+        Returns:
+            Tuple of (should_defer, reason)
+        """
+        try:
+            from ..protocol.deferred_rewards import should_defer_distribution
+
+            # Get treasury balances
+            if self._alert_manager:
+                balances = self._alert_manager.get_treasury_balances()
+            else:
+                balances = {'satori': 0.0, 'evr': 0.0}
+
+            return should_defer_distribution(
+                treasury_satori=balances.get('satori', 0.0),
+                treasury_evr=balances.get('evr', 0.0),
+                required_satori=required_satori,
+                required_evr=required_evr,
+            )
+        except ImportError:
+            return False, None
+
+    def deferRound(
+        self,
+        round_id: int,
+        rewards: Dict[str, float],
+        reason: str,
+    ) -> bool:
+        """
+        Defer a round's rewards when treasury is insufficient.
+
+        Args:
+            round_id: The round being deferred
+            rewards: Dict of address -> reward amount
+            reason: Deferral reason
+
+        Returns:
+            True if deferred successfully
+        """
+        if self._deferred_rewards_manager:
+            try:
+                from ..protocol.deferred_rewards import DeferralReason
+                reason_enum = DeferralReason(reason)
+                self._deferred_rewards_manager.defer_round(
+                    round_id=round_id,
+                    rewards=rewards,
+                    reason=reason_enum,
+                )
+                return True
+            except Exception as e:
+                logger.warning(f"deferRound failed: {e}")
+        return False
+
+    # ========================================================================
+    # REWARD ADDRESS METHODS (Custom Payout Addresses)
+    # ========================================================================
+
+    def getRewardAddress(self, wallet_address: Optional[str] = None) -> Optional[str]:
+        """
+        Get the payout address for a wallet.
+
+        If a custom reward address is set, returns that.
+        Otherwise, returns the wallet address itself.
+
+        Args:
+            wallet_address: Address to look up (defaults to own wallet)
+
+        Returns:
+            Payout address or None if lookup fails
+        """
+        address = wallet_address or (self.wallet.address if self.wallet else "")
+
+        if self._reward_address_manager:
+            try:
+                import asyncio
+                payout = asyncio.get_event_loop().run_until_complete(
+                    self._reward_address_manager.get_payout_address(address)
+                )
+                return payout
+            except Exception as e:
+                logger.warning(f"getRewardAddress failed: {e}")
+
+        return address  # Default: wallet address
+
+    def getMyRewardAddress(self) -> Optional[str]:
+        """Get our own custom reward address if set."""
+        if self._reward_address_manager:
+            return self._reward_address_manager.get_my_reward_address()
+        return None
+
+    def removeRewardAddress(self) -> Dict:
+        """
+        Remove custom reward address (revert to wallet payouts).
+
+        Returns:
+            Dict with success status
+        """
+        if self._reward_address_manager:
+            try:
+                import asyncio
+                result = asyncio.get_event_loop().run_until_complete(
+                    self._reward_address_manager.remove_reward_address()
+                )
+                return {'success': result}
+            except Exception as e:
+                logger.warning(f"removeRewardAddress failed: {e}")
+                return {'success': False, 'error': str(e)}
+
+        return {'success': False, 'error': 'Reward address manager not available'}
+
+    # ========================================================================
+    # REFERRAL METHODS (Invite/Referral System)
+    # ========================================================================
+
+    def getReferrerStats(self, address: Optional[str] = None) -> Dict:
+        """
+        Get referral statistics for an address.
+
+        Args:
+            address: Address to look up (defaults to own wallet)
+
+        Returns:
+            Dict with referral count, tier, bonus, and achievements
+        """
+        addr = address or (self.wallet.address if self.wallet else "")
+
+        if self._referral_manager:
+            try:
+                import asyncio
+                stats = asyncio.get_event_loop().run_until_complete(
+                    self._referral_manager.get_referrer_stats(addr)
+                )
+                if stats:
+                    return stats.to_dict()
+            except Exception as e:
+                logger.warning(f"getReferrerStats failed: {e}")
+
+        return {
+            'referrer_address': addr,
+            'referral_count': 0,
+            'tier': None,
+            'bonus': 0.0,
+            'achievements': [],
+        }
+
+    def getMyReferrer(self) -> Optional[str]:
+        """Get the address that referred us."""
+        if self._referral_manager:
+            try:
+                import asyncio
+                referrer = asyncio.get_event_loop().run_until_complete(
+                    self._referral_manager.get_my_referrer()
+                )
+                return referrer
+            except Exception as e:
+                logger.warning(f"getMyReferrer failed: {e}")
+
+        return None
+
+    def getReferralBonus(self, address: Optional[str] = None) -> float:
+        """
+        Get the referral bonus multiplier for an address.
+
+        Args:
+            address: Address to look up (defaults to own wallet)
+
+        Returns:
+            Bonus multiplier (e.g., 0.05 for +5%)
+        """
+        addr = address or (self.wallet.address if self.wallet else "")
+
+        if self._referral_manager:
+            try:
+                import asyncio
+                bonus = asyncio.get_event_loop().run_until_complete(
+                    self._referral_manager.get_referral_bonus(addr)
+                )
+                return bonus
+            except Exception as e:
+                logger.warning(f"getReferralBonus failed: {e}")
+
+        return 0.0
+
+    def getTopReferrers(self, limit: int = 10) -> List[Dict]:
+        """
+        Get top referrers by referral count.
+
+        Args:
+            limit: Number of top referrers to return
+
+        Returns:
+            List of referrer stats
+        """
+        if self._referral_manager:
+            try:
+                import asyncio
+                referrers = asyncio.get_event_loop().run_until_complete(
+                    self._referral_manager.get_top_referrers(limit)
+                )
+                return [r.to_dict() for r in referrers]
+            except Exception as e:
+                logger.warning(f"getTopReferrers failed: {e}")
+
+        return []
 
 
 class P2PCentrifugoClient:

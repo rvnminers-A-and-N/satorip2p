@@ -49,7 +49,7 @@ try:
         P2SHEvrmoreAddress,
         CEvrmoreSecret,
     )
-    from evrmore.core.asset import CAssetTransfer
+    from evrmore.core.assets import RvnAssetData
     EVRMORELIB_AVAILABLE = True
 except ImportError:
     EVRMORELIB_AVAILABLE = False

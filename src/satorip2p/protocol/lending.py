@@ -79,9 +79,9 @@ class PoolConfig:
         """Get deterministic message for signing."""
         return f"{self.vault_address}:{self.vault_pubkey}:{self.pool_size_limit}:{self.worker_reward_pct}:{self.accepting}:{self.timestamp}"
 
-    def get_hash(self) -> str:
-        """Get hash of pool config for identification."""
-        return hashlib.sha256(self.get_signing_message().encode()).hexdigest()[:16]
+    def get_config_hash(self) -> str:
+        """Get deterministic hash of pool config for verification."""
+        return hashlib.sha256(self.get_signing_message().encode()).hexdigest()
 
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
@@ -558,9 +558,8 @@ class LendingManager:
 
             # Check pool size limit
             if pool and pool.pool_size_limit > 0:
-                current_total = sum(
-                    r.lent_out for r in self.get_pool_participants(vault_address)
-                )
+                participants = await self.get_pool_participants(vault_address)
+                current_total = sum(r.lent_out for r in participants)
                 if current_total + lent_out > pool.pool_size_limit:
                     return (False, "Pool stake limit would be exceeded")
 

@@ -74,6 +74,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `CharityUpdate` dataclass for charity status updates
   - Support for parent/child delegation relationships
   - PubSub and DHT integration for delegation sync
+- `protocol/pricing.py` - Real-time SafeTrade Pricing
+  - `PricingManager` for EVR/SATORI price feeds
+  - Fetches USDT pairs from SafeTrade API
+  - Caching with configurable refresh interval
+  - Price history tracking
+- `protocol/donation.py` - Treasury Donation Protocol
+  - `DonationManager` for treasury contributions
+  - Donor tier system (Bronze, Silver, Gold, Platinum, Diamond)
+  - Tier-based reward bonuses
+  - Top donor leaderboards
+- `protocol/referral.py` - Referral Program Protocol
+  - `ReferralManager` for referral tracking
+  - Referrer/referee relationship management
+  - Referral tier bonuses (2-15% based on count)
+  - Top referrer leaderboards
+- `protocol/alerts.py` - Treasury Alert System
+  - `AlertManager` for treasury status monitoring
+  - SATORI/EVR balance level tracking
+  - Severity-based alerts (info, warning, critical)
+  - Deferred reward notifications
+- `protocol/deferred_rewards.py` - Deferred Rewards Protocol
+  - `DeferredRewardManager` for pending reward tracking
+  - Reward claiming workflow
+  - Batch claim support
+- `protocol/reward_address.py` - Reward Address Management
+  - Custom reward address registration
+  - P2P broadcast of reward address changes
+- `protocol/bandwidth.py` - Bandwidth Management
+  - `BandwidthManager` for network usage tracking
+  - Per-peer bandwidth limits
+  - Rate limiting and throttling
+- `protocol/storage.py` - Distributed Storage Protocol
+  - `StorageManager` for persistent data
+  - DHT-backed storage with replication
+  - TTL support for ephemeral data
+- `protocol/versioning.py` - Protocol Versioning
+  - `VersionNegotiator` for protocol compatibility
+  - `PeerVersionTracker` for network version stats
+  - Feature flags for gradual rollout
+  - Breaking change detection
 
 #### Identity Layer
 - `identity/evrmore_bridge.py` - Enhanced bridge

@@ -70,7 +70,7 @@ class UPnPManager:
             import miniupnpc
 
             # Run discovery in thread pool (blocking operation)
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             self._upnp = miniupnpc.UPnP()
             self._upnp.discoverdelay = self.discovery_timeout * 1000  # milliseconds
 
@@ -128,7 +128,7 @@ class UPnPManager:
         external_port = external_port or internal_port
 
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
 
             # Try to add port mapping
             result = await loop.run_in_executor(
@@ -204,7 +204,7 @@ class UPnPManager:
         external_port = self._mapped_ports.get(internal_port, internal_port)
 
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
 
             result = await loop.run_in_executor(
                 None,

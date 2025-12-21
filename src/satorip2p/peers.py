@@ -387,6 +387,22 @@ class Peers:
                 except Exception as e:
                     logger.warning(f"Failed to start mDNS: {e}")
 
+            # Start custom Ping protocol (for connectivity testing)
+            if self._ping_service:
+                try:
+                    await self._ping_service.start()
+                    logger.debug("Custom Ping protocol started")
+                except Exception as e:
+                    logger.warning(f"Failed to start Ping protocol: {e}")
+
+            # Start custom Identify protocol (for peer info exchange)
+            if self._identify_handler:
+                try:
+                    await self._identify_handler.start()
+                    logger.debug("Custom Identify protocol started")
+                except Exception as e:
+                    logger.warning(f"Failed to start Identify protocol: {e}")
+
             # Give services time to initialize their managers
             # This is needed because stream handlers check manager.is_running
             await trio.sleep(0.1)
@@ -1117,32 +1133,86 @@ class Peers:
 
     # ========== Connectivity & NAT Detection ==========
 
-    async def ping_peer(self, peer_id: str, count: int = 3) -> Optional[List[float]]:
+    async def ping_peer(self, peer_id: str, count: int = 3, timeout: float = 10.0) -> Optional[List[float]]:
         """
         Ping a peer to test connectivity and measure latency.
+
+        Uses our custom GossipSub-based Ping protocol.
 
         Args:
             peer_id: Target peer ID to ping
             count: Number of ping requests to send (default: 3)
+            timeout: Timeout per ping in seconds (default: 10.0)
 
         Returns:
-            List of round-trip times in seconds, or None if ping failed
+            List of round-trip times in seconds, or None if all pings failed
         """
         if not self._ping_service:
             logger.warning("Ping service not initialized")
             return None
 
         try:
-            from libp2p.peer.id import ID as PeerID
-
-            target = PeerID.from_base58(peer_id)
-            latencies = await self._ping_service.ping(target, count)
-            logger.debug(f"Ping to {peer_id[:16]}...: {latencies}")
+            latencies = await self._ping_service.ping(peer_id, count, timeout)
+            if latencies:
+                avg_rtt = sum(latencies) / len(latencies)
+                logger.debug(f"Ping to {peer_id[:16]}...: avg={avg_rtt*1000:.2f}ms")
             return latencies
 
         except Exception as e:
             logger.debug(f"Ping to {peer_id[:16]}... failed: {e}")
             return None
+
+    def get_known_peer_identities(self) -> Dict[str, Any]:
+        """
+        Get identities of known peers from the Identify protocol.
+
+        Returns:
+            Dict mapping peer_id to PeerIdentity objects
+        """
+        if not self._identify_handler:
+            return {}
+
+        try:
+            return self._identify_handler.get_known_peers()
+        except Exception as e:
+            logger.debug(f"Failed to get peer identities: {e}")
+            return {}
+
+    def get_peers_by_role(self, role: str) -> List[Any]:
+        """
+        Get peers with a specific role (predictor, relay, oracle, signer).
+
+        Args:
+            role: Role to filter by
+
+        Returns:
+            List of PeerIdentity objects for peers with that role
+        """
+        if not self._identify_handler:
+            return []
+
+        try:
+            return self._identify_handler.get_peers_by_role(role)
+        except Exception as e:
+            logger.debug(f"Failed to get peers by role: {e}")
+            return []
+
+    async def announce_identity(self) -> None:
+        """
+        Announce our identity to the network.
+
+        This broadcasts our peer ID, Evrmore address, supported protocols,
+        and node roles to all connected peers.
+        """
+        if not self._identify_handler:
+            logger.warning("Identify protocol not initialized")
+            return
+
+        try:
+            await self._identify_handler.announce()
+            logger.debug("Identity announced")
+        except Exception as e:
+            logger.warning(f"Failed to announce identity: {e}")
 
     async def check_reachability(self) -> bool:
         """
@@ -1553,22 +1623,18 @@ class Peers:
 
     async def _init_ping(self) -> None:
         """
-        Initialize Ping protocol for connectivity testing.
+        Initialize custom Ping protocol for connectivity testing.
 
-        The Ping service allows testing connectivity to peers and
-        measuring round-trip latency.
+        Uses our GossipSub-based PingProtocol for measuring round-trip
+        latency. This is a Satori-native implementation that doesn't
+        depend on libp2p's optional ping module.
         """
-        if not self._host:
-            return
-
         try:
-            from libp2p.protocol.ping.ping import PingService
+            from .protocol.ping import PingProtocol
 
-            self._ping_service = PingService(self._host)
-            logger.info("Ping protocol initialized")
+            self._ping_service = PingProtocol(self)
+            logger.info("Ping protocol initialized (Satori custom)")
 
-        except ImportError as e:
-            logger.warning(f"Ping protocol not available: {e}")
         except Exception as e:
             logger.warning(f"Failed to initialize Ping protocol: {e}")
 
@@ -1595,27 +1661,18 @@ class Peers:
 
     async def _init_identify(self) -> None:
         """
-        Initialize Identify protocol for peer information exchange.
+        Initialize custom Identify protocol for peer information exchange.
 
-        The Identify protocol allows peers to exchange information about
-        their supported protocols, listen addresses, and public keys.
+        Uses our GossipSub-based IdentifyProtocol for exchanging peer
+        information (protocols, addresses, roles). This is a Satori-native
+        implementation that doesn't depend on libp2p's optional identify module.
         """
-        if not self._host:
-            return
-
         try:
-            from libp2p.identity.identify.protocol import identify_handler_for
+            from .protocol.identify import IdentifyProtocol
 
-            # Get the identify handler for this host
-            self._identify_handler = identify_handler_for(self._host)
+            self._identify_handler = IdentifyProtocol(self)
+            logger.info("Identify protocol initialized (Satori custom)")
 
-            # Register the identify handler with the host
-            # The handler responds to /ipfs/id/1.0.0 protocol requests
-            self._host.set_stream_handler("/ipfs/id/1.0.0", self._identify_handler)
-            logger.info("Identify protocol initialized")
-
-        except ImportError as e:
-            logger.warning(f"Identify protocol not available: {e}")
         except Exception as e:
             logger.warning(f"Failed to initialize Identify protocol: {e}")
             import traceback

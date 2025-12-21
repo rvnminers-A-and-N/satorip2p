@@ -1,0 +1,97 @@
+# docker-compose.e2e.yml
+#
+# Multi-container Docker setup for P2P end-to-end testing.
+# This creates isolated peers that can form a real GossipSub mesh.
+#
+# Usage:
+#   docker compose -f docker/docker-compose.e2e.yml up --build
+#   docker compose -f docker/docker-compose.e2e.yml down
+#
+# Test:
+#   docker compose -f docker/docker-compose.e2e.yml run --rm peer1 pytest tests/test_pubsub_e2e.py -v
+
+services:
+  # Bootstrap/relay node - first peer that others connect to
+  bootstrap:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: satorip2p-bootstrap
+    hostname: bootstrap
+    environment:
+      - SATORI_P2P_ROLE=bootstrap
+      - SATORI_P2P_PORT=4001
+      - SATORI_P2P_SEED=1
+    networks:
+      - satori-p2p
+    command: ["python3", "tests/e2e_bootstrap.py"]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import socket; s=socket.socket(); s.connect(('localhost', 4001)); s.close()"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # Peer 1 - subscriber
+  peer1:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: satorip2p-peer1
+    hostname: peer1
+    environment:
+      - SATORI_P2P_ROLE=subscriber
+      - SATORI_P2P_PORT=4002
+      - SATORI_P2P_SEED=2
+      - SATORI_BOOTSTRAP_PEER=/dns4/bootstrap/tcp/4001
+    depends_on:
+      bootstrap:
+        condition: service_healthy
+    networks:
+      - satori-p2p
+    command: pytest tests/test_pubsub_e2e.py -v --timeout=120
+
+  # Peer 2 - publisher (participates in mesh, doesn't run tests)
+  peer2:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: satorip2p-peer2
+    hostname: peer2
+    environment:
+      - SATORI_P2P_ROLE=publisher
+      - SATORI_P2P_PORT=4003
+      - SATORI_P2P_SEED=3
+      - SATORI_BOOTSTRAP_PEER=/dns4/bootstrap/tcp/4001
+    depends_on:
+      bootstrap:
+        condition: service_healthy
+    networks:
+      - satori-p2p
+    command: ["python3", "tests/e2e_peer.py"]
+
+  # Peer 3 - additional peer for mesh testing
+  peer3:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: satorip2p-peer3
+    hostname: peer3
+    environment:
+      - SATORI_P2P_ROLE=peer
+      - SATORI_P2P_PORT=4004
+      - SATORI_P2P_SEED=4
+      - SATORI_BOOTSTRAP_PEER=/dns4/bootstrap/tcp/4001
+    depends_on:
+      bootstrap:
+        condition: service_healthy
+    networks:
+      - satori-p2p
+    command: ["python3", "tests/e2e_peer.py"]
+
+networks:
+  satori-p2p:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

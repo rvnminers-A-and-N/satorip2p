@@ -215,6 +215,24 @@ from .bandwidth import (
     DEFAULT_TOPIC_MESSAGES_PER_SECOND,
     DEFAULT_PEER_MESSAGES_PER_SECOND,
 )
+from .ping import (
+    PingProtocol,
+    PingRequest,
+    PongResponse,
+    PING_TOPIC,
+    PONG_TOPIC,
+    PING_TIMEOUT,
+    PING_PROTOCOL_VERSION,
+)
+from .identify import (
+    IdentifyProtocol,
+    PeerIdentity,
+    IdentifyRequest,
+    IDENTIFY_TOPIC,
+    IDENTIFY_REQUEST_TOPIC,
+    IDENTIFY_PROTOCOL_VERSION,
+    IDENTITY_CACHE_TTL,
+)
 
 __all__ = [
     "SubscriptionManager",
@@ -432,4 +450,20 @@ __all__ = [
     "DEFAULT_GLOBAL_MESSAGES_PER_SECOND",
     "DEFAULT_TOPIC_MESSAGES_PER_SECOND",
     "DEFAULT_PEER_MESSAGES_PER_SECOND",
+    # Custom Ping Protocol
+    "PingProtocol",
+    "PingRequest",
+    "PongResponse",
+    "PING_TOPIC",
+    "PONG_TOPIC",
+    "PING_TIMEOUT",
+    "PING_PROTOCOL_VERSION",
+    # Custom Identify Protocol
+    "IdentifyProtocol",
+    "PeerIdentity",
+    "IdentifyRequest",
+    "IDENTIFY_TOPIC",
+    "IDENTIFY_REQUEST_TOPIC",
+    "IDENTIFY_PROTOCOL_VERSION",
+    "IDENTITY_CACHE_TTL",
 ]

@@ -13,10 +13,13 @@ FROM python:3.12-slim
 LABEL maintainer="Satori Network"
 LABEL description="satorip2p P2P module for Satori - Bridge mode compatible"
 
-# Install system dependencies for libp2p compilation
+# Install system dependencies for libp2p compilation and kawpow
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
+    git \
+    cmake \
+    make \
     libffi-dev \
     libgmp-dev \
     libssl-dev \
@@ -38,7 +41,7 @@ COPY . .
 RUN pip install -e .
 
 # Install test dependencies
-RUN pip install pytest pytest-asyncio pytest-timeout pandas
+RUN pip install pytest pytest-asyncio pytest-trio pytest-timeout pandas
 
 # IMPORTANT: Fix multihash library AFTER all installs
 # py-multihash gets installed as dependency but has incompatible API

@@ -258,6 +258,76 @@ docker-compose -f docker/docker-compose.yml up --build
 
 The module automatically detects Docker bridge mode and enables Circuit Relay for NAT traversal.
 
+## Protocol Managers
+
+satorip2p includes protocol managers for Satori Network operations:
+
+### Staking & Delegation
+
+```python
+from satorip2p.protocol.lending import LendingManager
+from satorip2p.protocol.delegation import DelegationManager
+
+# Pool lending operations
+lending = LendingManager(peers, wallet)
+await lending.start()
+await lending.register_pool()           # Open pool for lenders
+await lending.lend_to_vault(address)    # Lend to a pool
+pools = await lending.get_available_pools()
+
+# Stake delegation
+delegation = DelegationManager(peers, wallet)
+await delegation.start()
+await delegation.delegate_to(parent_address)
+children = await delegation.get_proxy_children()
+```
+
+### Treasury & Rewards
+
+```python
+from satorip2p.protocol.donation import DonationManager
+from satorip2p.protocol.referral import ReferralManager
+from satorip2p.protocol.pricing import PricingManager
+
+# Donations with tier rewards (Bronze → Diamond)
+donation = DonationManager(peers, wallet)
+stats = await donation.get_my_stats()
+
+# Referral tracking
+referral = ReferralManager(peers, wallet)
+await referral.set_referrer(address)
+
+# Real-time EVR/SATORI prices from SafeTrade
+pricing = PricingManager()
+evr_price = await pricing.get_evr_price()
+satori_price = await pricing.get_satori_price()
+```
+
+### Consensus & Signing
+
+```python
+from satorip2p.protocol.consensus import ConsensusManager
+from satorip2p.protocol.signer import SignerNode
+
+# Stake-weighted consensus
+consensus = ConsensusManager(peers, wallet)
+await consensus.propose_round(round_id, merkle_root)
+await consensus.vote(round_id, merkle_root)
+
+# Multi-sig treasury (3-of-5 threshold)
+signer = SignerNode(peers, wallet)
+await signer.request_signatures(tx_data)
+```
+
+### Network Roles
+
+| Role | Description | Protocol |
+|------|-------------|----------|
+| Predictor | Makes predictions on streams | `PredictionProtocol` |
+| Oracle | Provides external data | `OracleNetwork` |
+| Relay | Routes traffic for NAT traversal | `UptimeTracker` |
+| Signer | Signs treasury transactions | `SignerNode` |
+
 ## Architecture
 
 ```
@@ -268,11 +338,18 @@ The module automatically detects Docker bridge mode and enables Circuit Relay fo
 │  - subscribe/publish/broadcast                              │
 │  - get_network_map/get_connected_peers                      │
 ├─────────────────────────────────────────────────────────────┤
-│  Protocol Layer                                             │
+│  Protocol Managers                                          │
+│  - LendingManager / DelegationManager (staking)             │
+│  - DonationManager / ReferralManager (treasury)             │
+│  - ConsensusManager / SignerNode (governance)               │
+│  - OracleNetwork / PredictionProtocol (data)                │
+│  - PricingManager (SafeTrade prices)                        │
+├─────────────────────────────────────────────────────────────┤
+│  Core Protocol Layer                                        │
 │  - SubscriptionManager (stream tracking)                    │
 │  - MessageStore (offline delivery)                          │
 │  - RendezvousManager (stream discovery)                     │
-│  - Messages (serialization)                                 │
+│  - UptimeTracker (heartbeats)                               │
 ├─────────────────────────────────────────────────────────────┤
 │  Identity Layer                                             │
 │  - EvrmoreIdentityBridge (wallet → libp2p)                  │

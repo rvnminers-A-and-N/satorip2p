@@ -919,7 +919,7 @@ class Peers:
 
     # ========== Subscription Management ==========
 
-    def subscribe(
+    async def subscribe(
         self,
         stream_id: str,
         callback: Callable[[str, Any], None]
@@ -931,7 +931,7 @@ class Peers:
             stream_id: Stream UUID to subscribe to
             callback: Function called with (stream_id, data) on new data
 
-        Note: This is a synchronous method that registers the callback locally.
+        Note: This is now async for compatibility with protocol classes.
         For full network registration, call subscribe_async() instead.
         """
         if stream_id not in self._callbacks:
@@ -1132,6 +1132,48 @@ class Peers:
         return list(self._my_publications)
 
     # ========== Connectivity & NAT Detection ==========
+
+    async def connect_peer(self, multiaddr: str, timeout: float = 30.0) -> bool:
+        """
+        Connect to a peer by multiaddress.
+
+        Args:
+            multiaddr: Full multiaddress including peer ID
+                      (e.g., /ip4/172.17.0.3/tcp/24600/p2p/16Uiu2HAk...)
+            timeout: Connection timeout in seconds
+
+        Returns:
+            True if connection succeeded, False otherwise
+        """
+        if not self._host:
+            logger.warning("Host not initialized")
+            return False
+
+        try:
+            import trio
+            from multiaddr import Multiaddr
+            from libp2p.peer.peerinfo import info_from_p2p_addr
+
+            # Resolve DNS if needed
+            resolved_addr = self._resolve_multiaddr_dns(multiaddr)
+            maddr = Multiaddr(resolved_addr)
+            peer_info = info_from_p2p_addr(maddr)
+
+            logger.info(f"Connecting to peer {peer_info.peer_id}...")
+
+            with trio.move_on_after(timeout) as cancel_scope:
+                await self._host.connect(peer_info)
+
+            if cancel_scope.cancelled_caught:
+                logger.warning(f"Connection to {peer_info.peer_id} timed out")
+                return False
+
+            logger.info(f"Connected to peer: {peer_info.peer_id}")
+            return True
+
+        except Exception as e:
+            logger.warning(f"Failed to connect to peer: {e}")
+            return False
 
     async def ping_peer(self, peer_id: str, count: int = 3, timeout: float = 10.0) -> Optional[List[float]]:
         """

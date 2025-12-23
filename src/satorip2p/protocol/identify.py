@@ -150,8 +150,8 @@ class IdentifyProtocol:
 
         try:
             await self._peers.broadcast(
-                json.dumps(identity.to_dict()).encode(),
-                stream_id=IDENTIFY_TOPIC.replace("satori/", "")
+                IDENTIFY_TOPIC.replace("satori/", ""),
+                json.dumps(identity.to_dict()).encode()
             )
             logger.debug(f"Announced identity: {identity.peer_id[:16]}...")
         except Exception as e:
@@ -178,8 +178,8 @@ class IdentifyProtocol:
 
         try:
             await self._peers.broadcast(
-                json.dumps(request.to_dict()).encode(),
-                stream_id=IDENTIFY_REQUEST_TOPIC.replace("satori/", "")
+                IDENTIFY_REQUEST_TOPIC.replace("satori/", ""),
+                json.dumps(request.to_dict()).encode()
             )
         except Exception as e:
             logger.debug(f"Failed to request identity: {e}")

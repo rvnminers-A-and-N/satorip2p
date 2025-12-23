@@ -176,10 +176,10 @@ class PingProtocol:
             self._pending_pings[ping_id] = send_time
 
             try:
-                # Send ping via broadcast
+                # Send ping via broadcast (stream_id first, then message)
                 await self._peers.broadcast(
-                    json.dumps(request.to_dict()).encode(),
-                    stream_id=PING_TOPIC.replace("satori/", "")
+                    PING_TOPIC.replace("satori/", ""),
+                    json.dumps(request.to_dict()).encode()
                 )
 
                 # Wait for pong
@@ -255,8 +255,8 @@ class PingProtocol:
         """Send pong response."""
         try:
             await self._peers.broadcast(
-                json.dumps(response.to_dict()).encode(),
-                stream_id=PONG_TOPIC.replace("satori/", "")
+                PONG_TOPIC.replace("satori/", ""),
+                json.dumps(response.to_dict()).encode()
             )
         except Exception as e:
             logger.debug(f"Error sending pong: {e}")

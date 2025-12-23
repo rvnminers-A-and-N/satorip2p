@@ -96,11 +96,19 @@ class PingProtocol:
         self._pending_pings: Dict[str, float] = {}  # ping_id -> send_timestamp
         self._received_pongs: Dict[str, PongResponse] = {}  # ping_id -> response
         self._started = False
+        self._trio_token = None  # Store trio token for cross-thread calls
 
     async def start(self) -> None:
         """Start the ping protocol by subscribing to topics."""
         if self._started:
             return
+
+        # Store trio token for callbacks that need to schedule async work
+        import trio
+        try:
+            self._trio_token = trio.lowlevel.current_trio_token()
+        except RuntimeError:
+            logger.warning("Could not get trio token during ping start")
 
         # Subscribe to ping requests (to respond)
         self._peers.subscribe(PING_TOPIC, self._on_ping_request)
@@ -219,12 +227,26 @@ class PingProtocol:
                 response_timestamp=time.time(),
             )
 
-            # Send pong response (run in background)
+            # Send pong response - schedule async work
             import trio
-            trio.from_thread.run(
-                self._send_pong,
-                response,
-            )
+            try:
+                # Check if we're already in a trio context
+                trio.lowlevel.current_trio_token()
+                # We're in trio, use nursery from peers if available
+                if hasattr(self._peers, '_nursery') and self._peers._nursery:
+                    self._peers._nursery.start_soon(self._send_pong, response)
+                else:
+                    logger.debug("Cannot send pong: no nursery available")
+            except RuntimeError:
+                # Not in trio context, use from_thread with stored token
+                if self._trio_token:
+                    trio.from_thread.run(
+                        self._send_pong,
+                        response,
+                        trio_token=self._trio_token
+                    )
+                else:
+                    logger.debug("Cannot send pong: no trio token available")
 
         except Exception as e:
             logger.debug(f"Error handling ping request: {e}")

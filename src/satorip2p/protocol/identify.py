@@ -100,11 +100,19 @@ class IdentifyProtocol:
         self._known_peers: Dict[str, PeerIdentity] = {}  # peer_id -> identity
         self._identity_timestamps: Dict[str, float] = {}  # peer_id -> last_seen
         self._started = False
+        self._trio_token = None  # Store trio token for cross-thread calls
 
     async def start(self) -> None:
         """Start the identify protocol."""
         if self._started:
             return
+
+        # Store trio token for callbacks that need to schedule async work
+        import trio
+        try:
+            self._trio_token = trio.lowlevel.current_trio_token()
+        except RuntimeError:
+            logger.warning("Could not get trio token during identify start")
 
         # Subscribe to identity announcements
         self._peers.subscribe(IDENTIFY_TOPIC, self._on_identity)
@@ -298,9 +306,22 @@ class IdentifyProtocol:
             if request.requester_id == my_peer_id:
                 return
 
-            # Respond with our identity
+            # Respond with our identity - schedule async announce
             import trio
-            trio.from_thread.run(self.announce)
+            try:
+                # Check if we're already in a trio context
+                trio.lowlevel.current_trio_token()
+                # We're in trio, use nursery from peers if available
+                if hasattr(self._peers, '_nursery') and self._peers._nursery:
+                    self._peers._nursery.start_soon(self.announce)
+                else:
+                    logger.debug("Cannot announce: no nursery available")
+            except RuntimeError:
+                # Not in trio context, use from_thread with stored token
+                if self._trio_token:
+                    trio.from_thread.run(self.announce, trio_token=self._trio_token)
+                else:
+                    logger.debug("Cannot announce: no trio token available")
 
         except Exception as e:
             logger.debug(f"Error handling identity request: {e}")

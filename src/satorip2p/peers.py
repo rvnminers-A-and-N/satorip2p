@@ -1882,7 +1882,11 @@ class Peers:
             return
 
         await trio.sleep(5)  # Wait for connections to establish
-        messages = await self._message_store.retrieve_pending(self.peer_id)
+        try:
+            messages = await self._message_store.retrieve_pending(self.peer_id)
+        except Exception as e:
+            logger.warning(f"Failed to retrieve pending messages: {e}")
+            return
 
         for payload in messages:
             try:

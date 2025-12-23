@@ -27,16 +27,14 @@ logger = logging.getLogger("satorip2p.electrumx.client")
 
 # Satori ElectrumX servers (SSL on port 50002)
 ELECTRUMX_SERVERS = [
-    ("electrumx1.satorinet.io", 50002),
-    ("electrumx2.satorinet.io", 50002),
-    ("electrumx3.satorinet.io", 50002),
+    ("167.71.11.203", 50002),
+    ("evrx-1.satoriog.com", 50002),
 ]
 
 # Fallback servers (non-SSL on port 50001)
 ELECTRUMX_SERVERS_NO_SSL = [
-    ("electrumx1.satorinet.io", 50001),
-    ("electrumx2.satorinet.io", 50001),
-    ("electrumx3.satorinet.io", 50001),
+    ("167.71.11.203", 50001),
+    ("evrx-1.satoriog.com", 50001),
 ]
 
 # Client identification

@@ -800,21 +800,37 @@ class Peers:
 
     async def broadcast(
         self,
-        message: Any,
-        stream_id: Optional[str] = None
+        stream_id_or_message: Any,
+        message: Any = None
     ) -> int:
         """
         Broadcast message to all peers or stream subscribers.
 
         Args:
-            message: Message payload
-            stream_id: If provided, only send to stream subscribers
+            stream_id_or_message: Stream ID (topic) if message provided, else message
+            message: Message payload (if stream_id provided as first arg)
 
         Returns:
             Number of peers message was sent to
+
+        Usage:
+            # Broadcast to topic (common pattern)
+            await peers.broadcast("satori/topic", {"data": "value"})
+
+            # Broadcast to all peers (no topic)
+            await peers.broadcast({"data": "value"})
         """
         if not self._started:
             return 0
+
+        # Handle both calling conventions:
+        # broadcast(topic, message) - new common pattern
+        # broadcast(message) - no topic, broadcast to all
+        if message is not None:
+            stream_id = stream_id_or_message
+        else:
+            stream_id = None
+            message = stream_id_or_message
 
         if stream_id and self._pubsub:
             # Publish to GossipSub topic
@@ -949,7 +965,7 @@ class Peers:
             callback: Function called with (stream_id, data) on new data
         """
         # Local subscription
-        self.subscribe(stream_id, callback)
+        await self.subscribe(stream_id, callback)
 
         # Subscribe to GossipSub topic
         if self._pubsub:
@@ -968,7 +984,7 @@ class Peers:
         if self._rendezvous:
             await self._rendezvous.register_subscriber(stream_id)
 
-    def unsubscribe(self, stream_id: str) -> None:
+    async def unsubscribe(self, stream_id: str) -> None:
         """Unsubscribe from a data stream (local only)."""
         self._callbacks.pop(stream_id, None)
         self._my_subscriptions.discard(stream_id)
@@ -976,7 +992,7 @@ class Peers:
 
     async def unsubscribe_async(self, stream_id: str) -> None:
         """Unsubscribe from a data stream with network unregistration."""
-        self.unsubscribe(stream_id)
+        await self.unsubscribe(stream_id)
 
         if self._pubsub:
             topic = f"{STREAM_TOPIC_PREFIX}{stream_id}"

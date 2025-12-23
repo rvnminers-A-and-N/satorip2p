@@ -48,6 +48,11 @@ class UPnPManager:
         return self._available is True
 
     @property
+    def is_mapped(self) -> bool:
+        """Check if any ports have been mapped via UPnP."""
+        return bool(self._mapped_ports)
+
+    @property
     def external_ip(self) -> Optional[str]:
         """Get external IP address discovered via UPnP."""
         return self._external_ip

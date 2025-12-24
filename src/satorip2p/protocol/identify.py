@@ -114,11 +114,11 @@ class IdentifyProtocol:
         except RuntimeError:
             logger.warning("Could not get trio token during identify start")
 
-        # Subscribe to identity announcements
-        self._peers.subscribe(IDENTIFY_TOPIC, self._on_identity)
+        # Subscribe to identity announcements - use subscribe_async for GossipSub
+        await self._peers.subscribe_async(IDENTIFY_TOPIC, self._on_identity)
 
-        # Subscribe to identity requests
-        self._peers.subscribe(IDENTIFY_REQUEST_TOPIC, self._on_identity_request)
+        # Subscribe to identity requests - use subscribe_async for GossipSub
+        await self._peers.subscribe_async(IDENTIFY_REQUEST_TOPIC, self._on_identity_request)
 
         self._started = True
         logger.info("Identify protocol started")

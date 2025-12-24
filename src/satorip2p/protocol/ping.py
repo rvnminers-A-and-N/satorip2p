@@ -110,11 +110,11 @@ class PingProtocol:
         except RuntimeError:
             logger.warning("Could not get trio token during ping start")
 
-        # Subscribe to ping requests (to respond)
-        self._peers.subscribe(PING_TOPIC, self._on_ping_request)
+        # Subscribe to ping requests (to respond) - use subscribe_async for GossipSub
+        await self._peers.subscribe_async(PING_TOPIC, self._on_ping_request)
 
-        # Subscribe to pong responses (to receive)
-        self._peers.subscribe(PONG_TOPIC, self._on_pong_response)
+        # Subscribe to pong responses (to receive) - use subscribe_async for GossipSub
+        await self._peers.subscribe_async(PONG_TOPIC, self._on_pong_response)
 
         self._started = True
         logger.info("Ping protocol started")

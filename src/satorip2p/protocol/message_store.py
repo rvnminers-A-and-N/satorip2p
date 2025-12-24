@@ -229,10 +229,12 @@ class MessageStore:
             return
 
         try:
-            key = f"{self.PENDING_KEY_PREFIX}{target_peer}"
-            await self.dht.provide(key.encode())
+            target_peer_str = target_peer if isinstance(target_peer, str) else str(target_peer)
+            key = f"{self.PENDING_KEY_PREFIX}{target_peer_str}"
+            key_bytes = key.encode('utf-8') if isinstance(key, str) else key
+            await self.dht.provide(key_bytes)
             self._announced_for.add(target_peer)
-            logger.debug(f"Announced holding messages for {target_peer[:16]}...")
+            logger.debug(f"Announced holding messages for {target_peer_str[:16]}...")
         except Exception as e:
             logger.warning(f"Failed to announce in DHT: {e}")
 
@@ -259,14 +261,17 @@ class MessageStore:
         messages = []
 
         # Query DHT for message holders
+        holders = []
         if self.dht:
             try:
-                key = f"{self.PENDING_KEY_PREFIX}{my_peer_id}"
-                holders = await self.dht.find_providers(key.encode())
+                my_peer_id_str = my_peer_id if isinstance(my_peer_id, str) else str(my_peer_id)
+                key = f"{self.PENDING_KEY_PREFIX}{my_peer_id_str}"
+                key_bytes = key.encode('utf-8') if isinstance(key, str) else key
+                holders = await self.dht.find_providers(key_bytes)
 
                 for holder in holders:
                     holder_id = str(holder)
-                    retrieved = await self._fetch_from_holder(holder_id, my_peer_id)
+                    retrieved = await self._fetch_from_holder(holder_id, my_peer_id_str)
                     messages.extend(retrieved)
 
             except Exception as e:

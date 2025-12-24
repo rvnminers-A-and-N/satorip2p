@@ -7,7 +7,6 @@ Uses miniupnpc library for port forwarding.
 
 import logging
 from typing import Optional, Tuple
-import asyncio
 
 logger = logging.getLogger("satorip2p.nat.upnp")
 
@@ -73,14 +72,13 @@ class UPnPManager:
 
         try:
             import miniupnpc
+            import trio
 
-            # Run discovery in thread pool (blocking operation)
-            loop = asyncio.get_running_loop()
             self._upnp = miniupnpc.UPnP()
             self._upnp.discoverdelay = self.discovery_timeout * 1000  # milliseconds
 
-            # Discover devices
-            devices = await loop.run_in_executor(None, self._upnp.discover)
+            # Run discovery in thread (blocking operation) using Trio
+            devices = await trio.to_thread.run_sync(self._upnp.discover)
 
             if devices == 0:
                 logger.info("No UPnP devices found")
@@ -88,11 +86,11 @@ class UPnPManager:
                 return False
 
             # Select IGD (Internet Gateway Device)
-            await loop.run_in_executor(None, self._upnp.selectigd)
+            await trio.to_thread.run_sync(self._upnp.selectigd)
 
             # Get external IP
-            self._external_ip = await loop.run_in_executor(
-                None, self._upnp.externalipaddress
+            self._external_ip = await trio.to_thread.run_sync(
+                self._upnp.externalipaddress
             )
 
             logger.info(f"UPnP IGD found, external IP: {self._external_ip}")
@@ -133,12 +131,11 @@ class UPnPManager:
         external_port = external_port or internal_port
 
         try:
-            loop = asyncio.get_running_loop()
+            import trio
 
-            # Try to add port mapping
-            result = await loop.run_in_executor(
-                None,
-                lambda: self._upnp.addportmapping(
+            # Try to add port mapping using Trio thread pool
+            def do_mapping():
+                return self._upnp.addportmapping(
                     external_port,
                     protocol,
                     self._upnp.lanaddr,
@@ -146,7 +143,8 @@ class UPnPManager:
                     description,
                     ""  # Remote host (empty = any)
                 )
-            )
+
+            result = await trio.to_thread.run_sync(do_mapping)
 
             if result:
                 self._mapped_ports[internal_port] = external_port
@@ -209,12 +207,13 @@ class UPnPManager:
         external_port = self._mapped_ports.get(internal_port, internal_port)
 
         try:
-            loop = asyncio.get_running_loop()
+            import trio
 
-            result = await loop.run_in_executor(
-                None,
-                lambda: self._upnp.deleteportmapping(external_port, protocol)
-            )
+            # Run blocking UPnP call in thread using Trio
+            def do_unmap():
+                return self._upnp.deleteportmapping(external_port, protocol)
+
+            result = await trio.to_thread.run_sync(do_unmap)
 
             if result:
                 self._mapped_ports.pop(internal_port, None)

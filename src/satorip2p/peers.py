@@ -840,9 +840,9 @@ class Peers:
             topic = f"{STREAM_TOPIC_PREFIX}{stream_id}"
             data = serialize_message(message)
             try:
-                logger.debug(f"Broadcasting to topic {topic}")
+                logger.info(f"Broadcasting to topic {topic}")
                 await self._pubsub.publish(topic, data)
-                logger.debug(f"Broadcast to {topic} successful")
+                logger.info(f"Broadcast to {topic} successful")
                 # GossipSub handles mesh propagation
                 subs = self._subscriptions.get_subscribers(stream_id) if self._subscriptions else []
                 return len(subs)

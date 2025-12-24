@@ -16,7 +16,7 @@ Features:
 import logging
 import time
 import json
-from typing import Dict, List, Optional, Set, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
 from dataclasses import dataclass, asdict, field
 
 if TYPE_CHECKING:
@@ -266,10 +266,18 @@ class IdentifyProtocol:
         except Exception:
             return "satorip2p/1.0.0"
 
-    def _on_identity(self, stream_id: str, data: bytes) -> None:
+    def _on_identity(self, stream_id: str, data: Any) -> None:
         """Handle incoming identity announcement."""
         try:
-            identity_data = json.loads(data.decode())
+            # Data may be bytes (raw) or already deserialized dict
+            if isinstance(data, bytes):
+                identity_data = json.loads(data.decode())
+            elif isinstance(data, dict):
+                identity_data = data
+            else:
+                logger.warning(f"Unexpected identity data type: {type(data)}")
+                return
+
             identity = PeerIdentity.from_dict(identity_data)
 
             # Don't store our own identity
@@ -280,18 +288,26 @@ class IdentifyProtocol:
             self._known_peers[identity.peer_id] = identity
             self._identity_timestamps[identity.peer_id] = time.time()
 
-            logger.debug(
+            logger.info(
                 f"Received identity from {identity.peer_id[:16]}... "
-                f"(roles: {identity.roles})"
+                f"(roles: {identity.roles}, addr: {identity.evrmore_address[:16]}...)"
             )
 
         except Exception as e:
-            logger.debug(f"Error handling identity: {e}")
+            logger.warning(f"Error handling identity: {e}")
 
-    def _on_identity_request(self, stream_id: str, data: bytes) -> None:
+    def _on_identity_request(self, stream_id: str, data: Any) -> None:
         """Handle incoming identity request."""
         try:
-            request_data = json.loads(data.decode())
+            # Data may be bytes (raw) or already deserialized dict
+            if isinstance(data, bytes):
+                request_data = json.loads(data.decode())
+            elif isinstance(data, dict):
+                request_data = data
+            else:
+                logger.warning(f"Unexpected identity request data type: {type(data)}")
+                return
+
             request = IdentifyRequest.from_dict(request_data)
 
             my_peer_id = self._peers.peer_id

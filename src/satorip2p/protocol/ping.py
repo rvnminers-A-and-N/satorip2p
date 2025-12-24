@@ -17,7 +17,7 @@ import logging
 import time
 import uuid
 import json
-from typing import Dict, List, Optional, Callable, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Callable, TYPE_CHECKING
 from dataclasses import dataclass, asdict
 
 if TYPE_CHECKING:
@@ -204,10 +204,18 @@ class PingProtocol:
 
         return latencies if latencies else None
 
-    def _on_ping_request(self, stream_id: str, data: bytes) -> None:
+    def _on_ping_request(self, stream_id: str, data: Any) -> None:
         """Handle incoming ping request."""
         try:
-            request_data = json.loads(data.decode())
+            # Data may be bytes (raw) or already deserialized dict
+            if isinstance(data, bytes):
+                request_data = json.loads(data.decode())
+            elif isinstance(data, dict):
+                request_data = data
+            else:
+                logger.warning(f"Unexpected ping data type: {type(data)}")
+                return
+
             request = PingRequest.from_dict(request_data)
 
             my_peer_id = self._peers.peer_id
@@ -261,10 +269,18 @@ class PingProtocol:
         except Exception as e:
             logger.debug(f"Error sending pong: {e}")
 
-    def _on_pong_response(self, stream_id: str, data: bytes) -> None:
+    def _on_pong_response(self, stream_id: str, data: Any) -> None:
         """Handle incoming pong response."""
         try:
-            response_data = json.loads(data.decode())
+            # Data may be bytes (raw) or already deserialized dict
+            if isinstance(data, bytes):
+                response_data = json.loads(data.decode())
+            elif isinstance(data, dict):
+                response_data = data
+            else:
+                logger.warning(f"Unexpected pong data type: {type(data)}")
+                return
+
             response = PongResponse.from_dict(response_data)
 
             my_peer_id = self._peers.peer_id

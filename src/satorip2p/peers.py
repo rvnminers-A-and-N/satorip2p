@@ -1167,6 +1167,10 @@ class Peers:
         """
         Connect to a peer by multiaddress.
 
+        Implements simultaneous connect handling: when both peers try to connect
+        to each other at the same time, uses peer ID comparison to determine
+        which peer should initiate. The peer with the "higher" peer ID initiates.
+
         Args:
             multiaddr: Full multiaddress including peer ID
                       (e.g., /ip4/172.17.0.3/tcp/24600/p2p/16Uiu2HAk...)
@@ -1188,18 +1192,59 @@ class Peers:
             resolved_addr = self._resolve_multiaddr_dns(multiaddr)
             maddr = Multiaddr(resolved_addr)
             peer_info = info_from_p2p_addr(maddr)
+            target_peer_id = str(peer_info.peer_id)
 
-            logger.info(f"Connecting to peer {peer_info.peer_id}...")
+            # Check if already connected - reuse existing connection
+            network = self._host.get_network()
+            if peer_info.peer_id in network.connections:
+                existing_conns = network.connections.get(peer_info.peer_id, [])
+                if existing_conns:
+                    logger.debug(f"Already connected to {target_peer_id[:16]}...")
+                    return True
 
-            with trio.move_on_after(timeout) as cancel_scope:
-                await self._host.connect(peer_info)
+            # Simultaneous connect handling using peer ID comparison
+            # The peer with the "higher" peer ID (lexicographically) initiates
+            my_peer_id = str(self._host.get_id())
 
-            if cancel_scope.cancelled_caught:
-                logger.warning(f"Connection to {peer_info.peer_id} timed out")
+            # Track pending connections to prevent duplicates
+            if not hasattr(self, '_pending_connections'):
+                self._pending_connections = set()
+
+            if target_peer_id in self._pending_connections:
+                logger.debug(f"Connection to {target_peer_id[:16]}... already pending")
+                # Wait briefly and check if connection succeeded
+                await trio.sleep(1.0)
+                if peer_info.peer_id in network.connections:
+                    return True
                 return False
 
-            logger.info(f"Connected to peer: {peer_info.peer_id}")
-            return True
+            # Peer ID tiebreaker: lower ID waits, higher ID connects
+            if my_peer_id < target_peer_id:
+                # We have lower ID - wait briefly for them to connect to us
+                logger.debug(f"Peer ID tiebreaker: waiting for {target_peer_id[:16]}... to connect")
+                await trio.sleep(0.5)
+                # Check if they connected to us
+                if peer_info.peer_id in network.connections:
+                    logger.info(f"Peer {target_peer_id[:16]}... connected to us")
+                    return True
+                # They didn't connect, proceed with our connection
+                logger.debug(f"Proceeding with connection to {target_peer_id[:16]}...")
+
+            self._pending_connections.add(target_peer_id)
+            try:
+                logger.info(f"Connecting to peer {target_peer_id[:16]}...")
+
+                with trio.move_on_after(timeout) as cancel_scope:
+                    await self._host.connect(peer_info)
+
+                if cancel_scope.cancelled_caught:
+                    logger.warning(f"Connection to {target_peer_id[:16]}... timed out")
+                    return False
+
+                logger.info(f"Connected to peer: {target_peer_id[:16]}...")
+                return True
+            finally:
+                self._pending_connections.discard(target_peer_id)
 
         except Exception as e:
             logger.warning(f"Failed to connect to peer: {e}")
@@ -1478,6 +1523,24 @@ class Peers:
             # Add transports if configured
             if transports:
                 host_kwargs["transports"] = transports
+
+            # Add ResourceManager with connection limits to prevent simultaneous connection issues
+            try:
+                from libp2p.rcmgr import ResourceManager
+                from libp2p.rcmgr.manager import ConnectionLimits
+                connection_limits = ConnectionLimits(
+                    max_established_per_peer=1,  # Only 1 connection per peer to avoid race conditions
+                    max_pending_inbound=10,
+                    max_pending_outbound=10,
+                )
+                resource_manager = ResourceManager(
+                    connection_limits=connection_limits,
+                    connections_per_peer_per_sec=2.0,  # Rate limit to prevent rapid reconnects
+                )
+                host_kwargs["resource_manager"] = resource_manager
+                logger.info("ResourceManager configured with max 1 connection per peer")
+            except ImportError as e:
+                logger.warning(f"ResourceManager not available: {e}")
 
             self._host = new_host(**host_kwargs)
 

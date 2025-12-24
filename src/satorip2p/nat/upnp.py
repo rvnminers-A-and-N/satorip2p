@@ -102,7 +102,12 @@ class UPnPManager:
             self._available = False
             return False
         except Exception as e:
-            logger.warning(f"UPnP discovery failed: {e}")
+            # miniupnpc raises "Success" exception when no IGD found in some environments
+            error_msg = str(e)
+            if error_msg.lower() == "success":
+                logger.info("No UPnP IGD available (likely Docker/container environment)")
+            else:
+                logger.warning(f"UPnP discovery failed: {e}")
             self._available = False
             return False
 

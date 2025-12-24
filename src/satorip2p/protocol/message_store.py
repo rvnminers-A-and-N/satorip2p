@@ -229,10 +229,10 @@ class MessageStore:
             return
 
         try:
+            # libp2p DHT expects string keys
             target_peer_str = target_peer if isinstance(target_peer, str) else str(target_peer)
             key = f"{self.PENDING_KEY_PREFIX}{target_peer_str}"
-            key_bytes = key.encode('utf-8') if isinstance(key, str) else key
-            await self.dht.provide(key_bytes)
+            await self.dht.provide(key)
             self._announced_for.add(target_peer)
             logger.debug(f"Announced holding messages for {target_peer_str[:16]}...")
         except Exception as e:
@@ -264,10 +264,10 @@ class MessageStore:
         holders = []
         if self.dht:
             try:
+                # libp2p DHT expects string keys
                 my_peer_id_str = my_peer_id if isinstance(my_peer_id, str) else str(my_peer_id)
                 key = f"{self.PENDING_KEY_PREFIX}{my_peer_id_str}"
-                key_bytes = key.encode('utf-8') if isinstance(key, str) else key
-                holders = await self.dht.find_providers(key_bytes)
+                holders = await self.dht.find_providers(key)
 
                 for holder in holders:
                     holder_id = str(holder)

@@ -120,11 +120,10 @@ class SubscriptionManager:
         # Announce to DHT
         if self.dht:
             try:
-                # Ensure stream_id is a string
+                # Ensure stream_id is a string - libp2p DHT expects string keys
                 stream_id_str = stream_id if isinstance(stream_id, str) else str(stream_id)
                 key = f"{self.SUB_KEY_PREFIX}{stream_id_str}"
-                key_bytes = key.encode('utf-8') if isinstance(key, str) else key
-                await self.dht.provide(key_bytes)
+                await self.dht.provide(key)
                 logger.debug(f"Announced subscription: {peer_id[:16]}... -> {stream_id_str[:16]}...")
                 return True
             except Exception as e:
@@ -231,10 +230,10 @@ class SubscriptionManager:
         # Query DHT
         if self.dht:
             try:
+                # libp2p DHT expects string keys
                 stream_id_str = stream_id if isinstance(stream_id, str) else str(stream_id)
                 key = f"{self.SUB_KEY_PREFIX}{stream_id_str}"
-                key_bytes = key.encode('utf-8') if isinstance(key, str) else key
-                providers = await self.dht.find_providers(key_bytes)
+                providers = await self.dht.find_providers(key)
                 peer_ids = [str(p) for p in providers]
 
                 # Update cache

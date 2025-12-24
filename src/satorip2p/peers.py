@@ -387,6 +387,9 @@ class Peers:
                 except Exception as e:
                     logger.warning(f"Failed to start mDNS: {e}")
 
+            # Wait for services to initialize (pubsub needs to be ready for protocols)
+            await trio.sleep(0.5)
+
             # Start custom Ping protocol (for connectivity testing)
             if self._ping_service:
                 try:
@@ -2038,6 +2041,7 @@ class Peers:
     async def _subscribe_to_topic(self, topic: str, stream_id: str) -> None:
         """Subscribe to a GossipSub topic."""
         if not self._pubsub:
+            logger.warning(f"Cannot subscribe to {topic}: pubsub not initialized")
             return
 
         try:
@@ -2048,6 +2052,8 @@ class Peers:
             if not hasattr(self, '_topic_subscriptions'):
                 self._topic_subscriptions = {}
             self._topic_subscriptions[topic] = subscription
+
+            logger.info(f"Subscribed to {topic}")
 
             # Note: Message processing is now handled by process_messages()
             # which should be called in a trio nursery by the caller

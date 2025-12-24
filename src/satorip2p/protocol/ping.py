@@ -207,6 +207,8 @@ class PingProtocol:
     def _on_ping_request(self, stream_id: str, data: Any) -> None:
         """Handle incoming ping request."""
         try:
+            logger.debug(f"_on_ping_request called with stream_id={stream_id}, data type={type(data)}")
+
             # Data may be bytes (raw) or already deserialized dict
             if isinstance(data, bytes):
                 request_data = json.loads(data.decode())
@@ -217,14 +219,21 @@ class PingProtocol:
                 return
 
             request = PingRequest.from_dict(request_data)
+            logger.debug(f"Parsed ping request: ping_id={request.ping_id}, sender={request.sender_id}, target={request.target_id}")
 
             my_peer_id = self._peers.peer_id
             if not my_peer_id:
+                logger.warning("Cannot respond to ping: my_peer_id is not available")
                 return
+
+            logger.debug(f"Target check: request.target_id={request.target_id} vs my_peer_id={my_peer_id}")
 
             # Only respond if we're the target
             if request.target_id != my_peer_id:
+                logger.debug(f"Ignoring ping: not targeted at us (target={request.target_id}, me={my_peer_id})")
                 return
+
+            logger.info(f"Ping targeted at us from {request.sender_id}, responding with pong")
 
             # Create pong response
             response = PongResponse(
@@ -240,34 +249,40 @@ class PingProtocol:
             try:
                 # Check if we're already in a trio context
                 trio.lowlevel.current_trio_token()
+                logger.debug("In trio context, checking for nursery")
                 # We're in trio, use nursery from peers if available
                 if hasattr(self._peers, '_nursery') and self._peers._nursery:
                     self._peers._nursery.start_soon(self._send_pong, response)
+                    logger.debug("Pong scheduled via nursery")
                 else:
-                    logger.debug("Cannot send pong: no nursery available")
+                    logger.warning("Cannot send pong: no nursery available (nursery is None or missing)")
             except RuntimeError:
                 # Not in trio context, use from_thread with stored token
+                logger.debug(f"Not in trio context, using from_thread (token available: {self._trio_token is not None})")
                 if self._trio_token:
                     trio.from_thread.run(
                         self._send_pong,
                         response,
                         trio_token=self._trio_token
                     )
+                    logger.debug("Pong sent via from_thread")
                 else:
-                    logger.debug("Cannot send pong: no trio token available")
+                    logger.warning("Cannot send pong: no trio token available")
 
         except Exception as e:
-            logger.debug(f"Error handling ping request: {e}")
+            logger.error(f"Error handling ping request: {e}", exc_info=True)
 
     async def _send_pong(self, response: PongResponse) -> None:
         """Send pong response."""
         try:
+            logger.info(f"Sending pong response: ping_id={response.ping_id}, to sender={response.sender_id}")
             await self._peers.broadcast(
                 PONG_TOPIC,
                 json.dumps(response.to_dict()).encode()
             )
+            logger.debug(f"Pong broadcast complete for ping_id={response.ping_id}")
         except Exception as e:
-            logger.debug(f"Error sending pong: {e}")
+            logger.error(f"Error sending pong: {e}", exc_info=True)
 
     def _on_pong_response(self, stream_id: str, data: Any) -> None:
         """Handle incoming pong response."""

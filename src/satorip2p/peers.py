@@ -380,8 +380,14 @@ class Peers:
                 logger.debug("DCUtR (hole punching) service started")
 
             # Start mDNS discovery (for local network peer discovery)
+            # Add random jitter to stagger mDNS starts and reduce simultaneous connection races
             if self._mdns_discovery:
                 try:
+                    import random
+                    mdns_jitter = random.uniform(0.5, 2.5)
+                    logger.debug(f"mDNS staggered start: waiting {mdns_jitter:.2f}s")
+                    await trio.sleep(mdns_jitter)
+
                     self._mdns_discovery.start()  # Sync method
                     logger.info("mDNS discovery started")
                 except Exception as e:

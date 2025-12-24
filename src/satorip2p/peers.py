@@ -1128,6 +1128,10 @@ class Peers:
         except Exception:
             return []
 
+    def get_peer_count(self) -> int:
+        """Get count of currently connected peers."""
+        return len(self.get_connected_peers())
+
     def get_subscribers(self, stream_id: str) -> List[str]:
         """Get peers subscribed to a stream."""
         if self._subscriptions:

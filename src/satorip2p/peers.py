@@ -978,6 +978,9 @@ class Peers:
         if self._pubsub:
             topic = f"{STREAM_TOPIC_PREFIX}{stream_id}"
             await self._subscribe_to_topic(topic, stream_id)
+            # Start message processor for this subscription
+            if self._nursery:
+                self._nursery.start_soon(self.process_messages, stream_id)
 
         # Announce subscription to DHT
         if self._subscriptions and self.peer_id:
@@ -2104,11 +2107,12 @@ class Peers:
             logger.warning(f"No subscription found for stream {stream_id}")
             return
 
-        logger.debug(f"Starting message processing for {stream_id[:16]}...")
+        logger.info(f"Starting message processing for {stream_id}")
 
         while stream_id in self._my_subscriptions:
             try:
                 msg = await subscription.get()
+                logger.info(f"Received message on {stream_id}: {len(msg.data)} bytes")
                 data = deserialize_message(msg.data)
                 if stream_id in self._callbacks:
                     for callback in self._callbacks[stream_id]:

@@ -25,9 +25,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("satorip2p.protocol.ping")
 
-# Protocol constants
-PING_TOPIC = "satori/ping"
-PONG_TOPIC = "satori/pong"
+# Protocol constants - topic names (prefixed with satori/stream/ by Peers)
+PING_TOPIC = "ping"
+PONG_TOPIC = "pong"
 PING_TIMEOUT = 10.0  # seconds
 PING_PROTOCOL_VERSION = "1.0.0"
 
@@ -178,7 +178,7 @@ class PingProtocol:
             try:
                 # Send ping via broadcast (stream_id first, then message)
                 await self._peers.broadcast(
-                    PING_TOPIC.replace("satori/", ""),
+                    PING_TOPIC,
                     json.dumps(request.to_dict()).encode()
                 )
 
@@ -255,7 +255,7 @@ class PingProtocol:
         """Send pong response."""
         try:
             await self._peers.broadcast(
-                PONG_TOPIC.replace("satori/", ""),
+                PONG_TOPIC,
                 json.dumps(response.to_dict()).encode()
             )
         except Exception as e:

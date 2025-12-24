@@ -24,9 +24,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("satorip2p.protocol.identify")
 
-# Protocol constants
-IDENTIFY_TOPIC = "satori/identify"
-IDENTIFY_REQUEST_TOPIC = "satori/identify/request"
+# Protocol constants - topic names (prefixed with satori/stream/ by Peers)
+IDENTIFY_TOPIC = "identify"
+IDENTIFY_REQUEST_TOPIC = "identify/request"
 IDENTIFY_PROTOCOL_VERSION = "1.0.0"
 IDENTITY_CACHE_TTL = 300  # 5 minutes
 
@@ -150,7 +150,7 @@ class IdentifyProtocol:
 
         try:
             await self._peers.broadcast(
-                IDENTIFY_TOPIC.replace("satori/", ""),
+                IDENTIFY_TOPIC,
                 json.dumps(identity.to_dict()).encode()
             )
             logger.debug(f"Announced identity: {identity.peer_id[:16]}...")
@@ -178,7 +178,7 @@ class IdentifyProtocol:
 
         try:
             await self._peers.broadcast(
-                IDENTIFY_REQUEST_TOPIC.replace("satori/", ""),
+                IDENTIFY_REQUEST_TOPIC,
                 json.dumps(request.to_dict()).encode()
             )
         except Exception as e:

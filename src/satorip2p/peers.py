@@ -840,13 +840,17 @@ class Peers:
             topic = f"{STREAM_TOPIC_PREFIX}{stream_id}"
             data = serialize_message(message)
             try:
+                logger.debug(f"Broadcasting to topic {topic}")
                 await self._pubsub.publish(topic, data)
+                logger.debug(f"Broadcast to {topic} successful")
                 # GossipSub handles mesh propagation
                 subs = self._subscriptions.get_subscribers(stream_id) if self._subscriptions else []
                 return len(subs)
             except Exception as e:
-                logger.error(f"Broadcast failed: {e}")
+                logger.error(f"Broadcast to {topic} failed: {e}")
                 return 0
+        elif stream_id and not self._pubsub:
+            logger.warning(f"Cannot broadcast to {stream_id}: pubsub not available")
         else:
             # Broadcast to all connected peers
             count = 0

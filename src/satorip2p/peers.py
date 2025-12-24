@@ -1191,6 +1191,47 @@ class Peers:
             logger.warning(f"Failed to connect to peer: {e}")
             return False
 
+    async def disconnect_peer(self, peer_id: str) -> bool:
+        """
+        Disconnect from a peer.
+
+        Args:
+            peer_id: Peer ID to disconnect from
+
+        Returns:
+            True if disconnection succeeded, False otherwise
+        """
+        if not self._host:
+            logger.warning("Host not initialized")
+            return False
+
+        try:
+            from libp2p.peer.id import ID as PeerID
+
+            # Parse peer ID
+            pid = PeerID.from_base58(peer_id)
+
+            # Close all connections to this peer
+            network = self._host.get_network()
+            if pid in network.connections:
+                for conn in list(network.connections.get(pid, [])):
+                    try:
+                        await conn.close()
+                    except Exception as e:
+                        logger.debug(f"Error closing connection: {e}")
+
+                # Remove from connections dict
+                network.connections.pop(pid, None)
+                logger.info(f"Disconnected from peer: {peer_id}")
+                return True
+            else:
+                logger.info(f"Peer {peer_id} was not connected")
+                return True  # Not an error if already disconnected
+
+        except Exception as e:
+            logger.warning(f"Failed to disconnect from peer: {e}")
+            return False
+
     async def ping_peer(self, peer_id: str, count: int = 3, timeout: float = 10.0) -> Optional[List[float]]:
         """
         Ping a peer to test connectivity and measure latency.

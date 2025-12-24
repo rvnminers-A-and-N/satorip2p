@@ -472,13 +472,10 @@ class UptimeTracker:
         if self.wallet is not None or self.private_key:
             heartbeat.signature = self._sign_heartbeat(heartbeat)
 
-        # Validate heartbeat before broadcast
+        # Validate heartbeat before broadcast (warn but don't block)
         is_valid, error = heartbeat.is_valid_for_broadcast()
         if not is_valid:
-            logger.warning(f"Heartbeat validation failed: {error}")
-            # Still record locally but warn about missing fields
-            self.receive_heartbeat(heartbeat)
-            return heartbeat
+            logger.debug(f"Heartbeat validation note: {error}")
 
         # Record our own heartbeat
         self.receive_heartbeat(heartbeat)

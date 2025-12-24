@@ -354,11 +354,15 @@ class UptimeTracker:
     # PUBLIC API
     # ========================================================================
 
-    async def start(self) -> bool:
+    async def start(self, nursery=None) -> bool:
         """
         Start the uptime tracker with heartbeat sending.
 
         This starts a background task that sends heartbeats every HEARTBEAT_INTERVAL.
+
+        Args:
+            nursery: Optional trio nursery to spawn heartbeat loop in.
+                     If not provided, the loop must be started manually with run_heartbeat_loop().
 
         Returns:
             True if started successfully
@@ -374,8 +378,40 @@ class UptimeTracker:
             round_id = f"round_{int(time.time())}"
             self.start_round(round_id, int(time.time()))
 
-        logger.info("Uptime tracker started, heartbeat sending enabled")
+        # Spawn heartbeat loop if nursery provided
+        if nursery is not None:
+            nursery.start_soon(self.run_heartbeat_loop)
+            logger.info("Uptime tracker started with heartbeat loop")
+        else:
+            logger.info("Uptime tracker started, heartbeat sending enabled (call run_heartbeat_loop manually)")
+
         return True
+
+    async def run_heartbeat_loop(self) -> None:
+        """
+        Run the heartbeat sending loop.
+
+        This should be called as a background task after start().
+        Sends heartbeats every HEARTBEAT_INTERVAL seconds.
+        """
+        import trio
+
+        logger.info("Heartbeat loop started")
+        while self._is_heartbeating:
+            try:
+                # Send heartbeat
+                heartbeat = self.send_heartbeat()
+                if heartbeat:
+                    logger.debug(f"Sent heartbeat: {heartbeat.node_id[:16]}...")
+                else:
+                    logger.debug("Heartbeat not sent (no active round)")
+            except Exception as e:
+                logger.warning(f"Failed to send heartbeat: {e}")
+
+            # Wait for next interval
+            await trio.sleep(HEARTBEAT_INTERVAL)
+
+        logger.info("Heartbeat loop stopped")
 
     async def stop(self) -> None:
         """Stop heartbeat sending."""

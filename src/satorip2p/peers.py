@@ -2072,6 +2072,24 @@ class Peers:
             # Tasks will be started when run_forever() is called
             logger.debug("Background tasks deferred until run_forever() is called")
 
+    def spawn_background_task(self, coro_func, *args) -> bool:
+        """
+        Spawn a coroutine as a background task in the P2P nursery.
+
+        Args:
+            coro_func: Async function to run
+            *args: Arguments to pass to the function
+
+        Returns:
+            True if task was spawned, False if nursery not available
+        """
+        if self._nursery:
+            self._nursery.start_soon(coro_func, *args)
+            return True
+        else:
+            logger.warning("Cannot spawn background task: nursery not available (call run_forever first)")
+            return False
+
     async def _retrieve_pending_messages(self) -> None:
         """Retrieve messages stored for us while offline."""
         if not self._message_store:

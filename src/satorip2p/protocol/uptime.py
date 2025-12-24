@@ -450,13 +450,18 @@ class UptimeTracker:
         if now - self._last_heartbeat < HEARTBEAT_INTERVAL - 5:
             return None
 
+        # Get peer_id from peers if available (dynamic lookup)
+        current_peer_id = self.peer_id
+        if not current_peer_id and self.peers:
+            current_peer_id = getattr(self.peers, 'peer_id', '') or ''
+
         # Create heartbeat with all fields
         heartbeat = Heartbeat(
             node_id=self.node_id,
             timestamp=now,
             round_id=self._current_round,
             evrmore_address=self.evrmore_address,
-            peer_id=self.peer_id,
+            peer_id=current_peer_id,
             roles=roles or ["predictor"],
             stake=self.stake,
             version=HEARTBEAT_PROTOCOL_VERSION,

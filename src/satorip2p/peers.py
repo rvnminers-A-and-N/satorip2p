@@ -1184,6 +1184,13 @@ class Peers:
                 for topic, peers in self._pubsub.router.mesh.items()
             }
 
+        # Get peer_protocol (which protocol each peer is using)
+        if hasattr(self._pubsub, 'router') and hasattr(self._pubsub.router, 'peer_protocol'):
+            result["peer_protocol"] = {
+                str(pid): str(proto)
+                for pid, proto in self._pubsub.router.peer_protocol.items()
+            }
+
         return result
 
     def get_subscribers(self, stream_id: str) -> List[str]:

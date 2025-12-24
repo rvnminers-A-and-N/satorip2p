@@ -1191,6 +1191,26 @@ class Peers:
                 for pid, proto in self._pubsub.router.peer_protocol.items()
             }
 
+        # Get backoff state (peers temporarily excluded from mesh)
+        if hasattr(self._pubsub, 'router') and hasattr(self._pubsub.router, 'back_off'):
+            import time
+            current_time = time.time()
+            backoff_info = {}
+            for (peer_id, topic), expiry in self._pubsub.router.back_off.items():
+                key = f"{str(peer_id)[:16]}...:{topic}"
+                backoff_info[key] = {
+                    "expires_in": round(expiry - current_time, 1),
+                    "expired": expiry < current_time
+                }
+            result["backoff"] = backoff_info
+
+        # Get fanout state
+        if hasattr(self._pubsub, 'router') and hasattr(self._pubsub.router, 'fanout'):
+            result["fanout"] = {
+                topic: [str(pid) for pid in peers]
+                for topic, peers in self._pubsub.router.fanout.items()
+            }
+
         return result
 
     def get_subscribers(self, stream_id: str) -> List[str]:

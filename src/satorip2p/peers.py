@@ -1141,6 +1141,51 @@ class Peers:
         """Get count of currently connected peers."""
         return len(self.get_connected_peers())
 
+    def get_pubsub_debug(self) -> Dict[str, Any]:
+        """
+        Get debug information about the GossipSub/Pubsub state.
+
+        Returns dict with:
+        - pubsub_peers: peers with open pubsub streams
+        - peer_topics: which peers are subscribed to which topics
+        - mesh: GossipSub mesh state (peers in mesh per topic)
+        - my_topics: topics we are subscribed to
+        """
+        result = {
+            "pubsub_available": self._pubsub is not None,
+            "pubsub_peers": [],
+            "peer_topics": {},
+            "mesh": {},
+            "my_topics": [],
+        }
+
+        if not self._pubsub:
+            return result
+
+        # Get peers with open pubsub streams
+        if hasattr(self._pubsub, 'peers'):
+            result["pubsub_peers"] = [str(pid) for pid in self._pubsub.peers.keys()]
+
+        # Get peer_topics (which peers are subscribed to which topics)
+        if hasattr(self._pubsub, 'peer_topics'):
+            result["peer_topics"] = {
+                topic: [str(pid) for pid in peers]
+                for topic, peers in self._pubsub.peer_topics.items()
+            }
+
+        # Get our subscribed topics
+        if hasattr(self._pubsub, 'topic_ids'):
+            result["my_topics"] = list(self._pubsub.topic_ids)
+
+        # Get GossipSub mesh state
+        if hasattr(self._pubsub, 'router') and hasattr(self._pubsub.router, 'mesh'):
+            result["mesh"] = {
+                topic: [str(pid) for pid in peers]
+                for topic, peers in self._pubsub.router.mesh.items()
+            }
+
+        return result
+
     def get_subscribers(self, stream_id: str) -> List[str]:
         """Get peers subscribed to a stream."""
         if self._subscriptions:

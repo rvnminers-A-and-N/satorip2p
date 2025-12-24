@@ -158,6 +158,7 @@ class Peers:
         self._nursery: Optional[trio.Nursery] = None
         self._pending_responses: Dict[str, trio.Event] = {}
         self._response_data: Dict[str, Any] = {}
+        self._pending_background_tasks: List[tuple] = []  # [(coro_func, args), ...]
 
         # Service managers (for proper cleanup)
         self._dht_manager = None  # TrioManager for DHT
@@ -353,6 +354,14 @@ class Peers:
         async with trio.open_nursery() as nursery:
             self._nursery = nursery
             self._cancel_scope = nursery.cancel_scope
+
+            # Spawn any queued background tasks first
+            if self._pending_background_tasks:
+                logger.info(f"Spawning {len(self._pending_background_tasks)} queued background task(s)")
+                for coro_func, args in self._pending_background_tasks:
+                    nursery.start_soon(coro_func, *args)
+                    logger.debug(f"Queued task spawned: {coro_func.__name__}")
+                self._pending_background_tasks.clear()
 
             # Start KadDHT service (CRITICAL: needed for peer discovery)
             if self._dht:
@@ -2076,19 +2085,25 @@ class Peers:
         """
         Spawn a coroutine as a background task in the P2P nursery.
 
+        If the nursery is not yet available (before run_forever() is called),
+        the task is queued and will be started when run_forever() creates the nursery.
+
         Args:
             coro_func: Async function to run
             *args: Arguments to pass to the function
 
         Returns:
-            True if task was spawned, False if nursery not available
+            True if task was spawned or queued successfully
         """
         if self._nursery:
             self._nursery.start_soon(coro_func, *args)
+            logger.debug(f"Background task spawned immediately: {coro_func.__name__}")
             return True
         else:
-            logger.warning("Cannot spawn background task: nursery not available (call run_forever first)")
-            return False
+            # Queue for later - will be spawned when run_forever() creates nursery
+            self._pending_background_tasks.append((coro_func, args))
+            logger.info(f"Background task queued (will start when nursery available): {coro_func.__name__}")
+            return True
 
     async def _retrieve_pending_messages(self) -> None:
         """Retrieve messages stored for us while offline."""

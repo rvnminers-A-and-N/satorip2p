@@ -323,6 +323,7 @@ class UptimeTracker:
         # Heartbeat sending state
         self._is_heartbeating: bool = False
         self._last_heartbeat: int = 0
+        self._last_status_message: str = ""  # Track most recent heartbeat message
 
         # Subscribe to heartbeat topic if peers available
         if self.peers:
@@ -492,6 +493,7 @@ class UptimeTracker:
                 logger.error(f"Failed to broadcast heartbeat: {e}")
 
         self._last_heartbeat = now
+        self._last_status_message = heartbeat.status_message  # Store for UI display
         return heartbeat
 
     def send_heartbeat(self, roles: Optional[List[str]] = None) -> Optional[Heartbeat]:
@@ -549,6 +551,7 @@ class UptimeTracker:
         logger.warning("send_heartbeat (sync) called - use send_heartbeat_async for network broadcast")
 
         self._last_heartbeat = now
+        self._last_status_message = heartbeat.status_message  # Store for UI display
         return heartbeat
 
     def _sign_heartbeat(self, heartbeat: Heartbeat) -> bytes:

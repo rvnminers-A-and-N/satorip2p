@@ -244,30 +244,31 @@ class PingProtocol:
                 response_timestamp=time.time(),
             )
 
-            # Send pong response - schedule async work
-            import trio
-            try:
-                # Check if we're already in a trio context
-                trio.lowlevel.current_trio_token()
-                logger.debug("In trio context, checking for nursery")
-                # We're in trio, use nursery from peers if available
-                if hasattr(self._peers, '_nursery') and self._peers._nursery:
-                    self._peers._nursery.start_soon(self._send_pong, response)
-                    logger.debug("Pong scheduled via nursery")
+            # Send pong response - use spawn_background_task for reliability
+            if hasattr(self._peers, 'spawn_background_task'):
+                success = self._peers.spawn_background_task(self._send_pong, response)
+                if success:
+                    logger.info(f"Pong scheduled via spawn_background_task for ping_id={request.ping_id}")
                 else:
-                    logger.warning("Cannot send pong: no nursery available (nursery is None or missing)")
-            except RuntimeError:
-                # Not in trio context, use from_thread with stored token
-                logger.debug(f"Not in trio context, using from_thread (token available: {self._trio_token is not None})")
-                if self._trio_token:
-                    trio.from_thread.run(
-                        self._send_pong,
-                        response,
-                        trio_token=self._trio_token
-                    )
-                    logger.debug("Pong sent via from_thread")
-                else:
-                    logger.warning("Cannot send pong: no trio token available")
+                    logger.warning("Failed to spawn pong task via spawn_background_task")
+            else:
+                # Fallback: try direct nursery access
+                import trio
+                try:
+                    if hasattr(self._peers, '_nursery') and self._peers._nursery:
+                        self._peers._nursery.start_soon(self._send_pong, response)
+                        logger.info(f"Pong scheduled via nursery for ping_id={request.ping_id}")
+                    elif self._trio_token:
+                        trio.from_thread.run(
+                            self._send_pong,
+                            response,
+                            trio_token=self._trio_token
+                        )
+                        logger.info(f"Pong sent via from_thread for ping_id={request.ping_id}")
+                    else:
+                        logger.warning("Cannot send pong: no nursery or trio token available")
+                except Exception as e:
+                    logger.error(f"Failed to schedule pong: {e}")
 
         except Exception as e:
             logger.error(f"Error handling ping request: {e}", exc_info=True)

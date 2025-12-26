@@ -169,6 +169,15 @@ class DistributionTrigger:
     # PUBLIC API
     # ========================================================================
 
+    async def start(self) -> None:
+        """Start the distribution trigger (no-op, initialization happens in __init__)."""
+        logger.info("DistributionTrigger started")
+
+    async def stop(self) -> None:
+        """Stop the distribution trigger."""
+        self._phase = DistributionPhase.IDLE
+        logger.info("DistributionTrigger stopped")
+
     def trigger_distribution(
         self,
         round_summary: "RoundSummary",

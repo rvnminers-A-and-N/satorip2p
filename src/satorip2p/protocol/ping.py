@@ -301,15 +301,20 @@ class PingProtocol:
 
             my_peer_id = self._peers.peer_id
             if not my_peer_id:
+                logger.debug("Pong ignored: my_peer_id is None")
                 return
 
             # Only process if we're the original sender
             if response.sender_id != my_peer_id:
+                logger.debug(f"Pong ignored: sender_id={response.sender_id[:16]}... != my_peer_id={my_peer_id[:16]}...")
                 return
 
             # Store response for pickup
             if response.ping_id in self._pending_pings:
                 self._received_pongs[response.ping_id] = response
+                logger.debug(f"Pong matched! ping_id={response.ping_id[:8]}... from responder={response.responder_id[:16]}...")
+            else:
+                logger.debug(f"Pong orphaned: ping_id={response.ping_id[:8]}... not in pending_pings (stale or duplicate)")
 
         except Exception as e:
             logger.debug(f"Error handling pong response: {e}")

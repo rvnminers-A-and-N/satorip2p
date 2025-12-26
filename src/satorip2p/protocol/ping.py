@@ -288,6 +288,8 @@ class PingProtocol:
     def _on_pong_response(self, stream_id: str, data: Any) -> None:
         """Handle incoming pong response."""
         try:
+            logger.info(f"_on_pong_response called with stream_id={stream_id}, data type={type(data)}")
+
             # Data may be bytes (raw) or already deserialized dict
             if isinstance(data, bytes):
                 response_data = json.loads(data.decode())
@@ -298,15 +300,19 @@ class PingProtocol:
                 return
 
             response = PongResponse.from_dict(response_data)
+            logger.info(f"Parsed pong: ping_id={response.ping_id[:8]}..., sender={response.sender_id[:16]}..., responder={response.responder_id[:16]}...")
 
             my_peer_id = self._peers.peer_id
             if not my_peer_id:
                 logger.info("Pong ignored: my_peer_id is None")
                 return
 
+            logger.info(f"Pong sender check: response.sender_id={response.sender_id[:16]}... vs my_peer_id={my_peer_id[:16]}...")
+
             # Only process if we're the original sender
             if response.sender_id != my_peer_id:
                 # This is expected - we receive all pongs on the topic but only care about ours
+                logger.info(f"Pong not for us (sender mismatch)")
                 return
 
             # Store response for pickup

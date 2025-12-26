@@ -463,7 +463,7 @@ class StreamRegistry:
         # Broadcast claim
         await self._broadcast_claim(claim)
 
-        logger.info(f"Claimed stream {stream_id[:16]}... slot {slot_index}")
+        logger.info(f"Claimed stream {stream_id} slot {slot_index}")
         return claim
 
     def _find_available_slot(self, stream_id: str) -> int:
@@ -507,7 +507,7 @@ class StreamRegistry:
             {"type": "release", "stream_id": stream_id, "slot": claim.slot_index}
         )
 
-        logger.info(f"Released claim on {stream_id[:16]}...")
+        logger.info(f"Released claim on {stream_id}")
         return True
 
     async def _broadcast_claim(self, claim: StreamClaim) -> bool:
@@ -536,7 +536,7 @@ class StreamRegistry:
 
                 # Verify signature
                 if not await self._verify_claim(claim):
-                    logger.debug(f"Invalid claim signature from {claim.predictor[:16]}...")
+                    logger.debug(f"Invalid claim signature from {claim.predictor}")
                     return
 
                 # Store claim
@@ -546,8 +546,8 @@ class StreamRegistry:
                 self._claims[stream_id][claim.slot_index] = claim
 
                 logger.debug(
-                    f"Received claim for {stream_id[:16]}... "
-                    f"slot {claim.slot_index} from {claim.predictor[:16]}..."
+                    f"Received claim for {stream_id} "
+                    f"slot {claim.slot_index} from {claim.predictor}"
                 )
 
                 # Notify callbacks
@@ -562,7 +562,7 @@ class StreamRegistry:
                 slot = data.get("slot", 0)
                 if stream_id in self._claims and slot in self._claims[stream_id]:
                     del self._claims[stream_id][slot]
-                    logger.debug(f"Slot {slot} released on {stream_id[:16]}...")
+                    logger.debug(f"Slot {slot} released on {stream_id}")
 
         except Exception as e:
             logger.debug(f"Failed to process claim: {e}")

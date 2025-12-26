@@ -307,7 +307,7 @@ class TransactionBuilder:
         tx_hex = b2x(tx.serialize())
         tx_hash = hashlib.sha256(hashlib.sha256(tx.serialize()).digest()).digest()[::-1].hex()
 
-        logger.info(f"Built unsigned TX: {tx_hash[:16]}... ({len(tx_hex)//2} bytes)")
+        logger.info(f"Built unsigned TX: {tx_hash} ({len(tx_hex)//2} bytes)")
 
         return UnsignedTransaction(
             tx_hex=tx_hex,

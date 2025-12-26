@@ -516,7 +516,7 @@ class CentrifugoServer:
             self._user_clients[user_id] = set()
         self._user_clients[user_id].add(client.client_id)
 
-        logger.info(f"Client connected: {client.client_id} (user: {user_id[:16]}...)")
+        logger.info(f"Client connected: {client.client_id} (user: {user_id})")
 
         # Send connect response
         await client.send({

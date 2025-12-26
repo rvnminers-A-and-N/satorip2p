@@ -190,11 +190,11 @@ class PingProtocol:
                         pong = self._received_pongs.pop(ping_id)
                         rtt = pong.response_timestamp - send_time
                         latencies.append(rtt)
-                        logger.debug(f"Ping {i+1}/{count} to {target_peer_id[:16]}...: {rtt*1000:.2f}ms")
+                        logger.debug(f"Ping {i+1}/{count} to target_peer_id={target_peer_id}: {rtt*1000:.2f}ms")
                         break
                     await trio.sleep(0.1)
                 else:
-                    logger.debug(f"Ping {i+1}/{count} to {target_peer_id[:16]}... timed out")
+                    logger.debug(f"Ping {i+1}/{count} to target_peer_id={target_peer_id} timed out")
 
             except Exception as e:
                 logger.debug(f"Ping {i+1}/{count} failed: {e}")

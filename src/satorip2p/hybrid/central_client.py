@@ -128,7 +128,7 @@ class CentralPubSubClient:
                     except Exception as e:
                         logger.warning(f"on_connect callback error: {e}")
 
-                logger.info(f"Connected to central server as {self.uid[:16]}...")
+                logger.info(f"Connected to central server as {self.uid}")
 
                 # Re-subscribe to any pending subscriptions
                 for stream_id in self._pending_subscriptions:
@@ -367,7 +367,7 @@ class CentralPubSubClient:
         return {
             "connected": self._connected,
             "url": self.url,
-            "uid": self.uid[:16] + "...",
+            "uid": self.uid,
             "subscriptions": len(self._subscriptions),
             "pending_subscriptions": len(self._pending_subscriptions),
             "messages_received": self._messages_received,

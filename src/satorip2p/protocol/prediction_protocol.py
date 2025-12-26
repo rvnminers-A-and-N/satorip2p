@@ -236,7 +236,7 @@ class PredictionProtocol:
                 )
 
         self._subscribed_streams[stream_id].append(callback)
-        logger.debug(f"Subscribed to predictions for {stream_id[:16]}...")
+        logger.debug(f"Subscribed to predictions for {stream_id}")
         return True
 
     async def unsubscribe_from_predictions(self, stream_id: str) -> bool:
@@ -262,7 +262,7 @@ class PredictionProtocol:
                 pass
 
         del self._subscribed_streams[stream_id]
-        logger.debug(f"Unsubscribed from predictions for {stream_id[:16]}...")
+        logger.debug(f"Unsubscribed from predictions for {stream_id}")
         return True
 
     async def _on_prediction_received(self, stream_id: str, data: dict) -> None:
@@ -273,12 +273,12 @@ class PredictionProtocol:
             # Verify hash
             expected_hash = prediction.compute_hash()
             if prediction.hash != expected_hash:
-                logger.debug(f"Invalid prediction hash from {prediction.predictor[:16]}...")
+                logger.debug(f"Invalid prediction hash from {prediction.predictor}")
                 return
 
             # Verify signature
             if not await self._verify_prediction(prediction):
-                logger.debug(f"Invalid prediction signature from {prediction.predictor[:16]}...")
+                logger.debug(f"Invalid prediction signature from {prediction.predictor}")
                 return
 
             # Cache prediction
@@ -299,8 +299,8 @@ class PredictionProtocol:
                         logger.debug(f"Prediction callback error: {e}")
 
             logger.debug(
-                f"Received prediction for {stream_id[:16]}... "
-                f"value={prediction.value} from {prediction.predictor[:16]}..."
+                f"Received prediction for {stream_id} "
+                f"value={prediction.value} from {prediction.predictor}"
             )
 
         except Exception as e:
@@ -383,7 +383,7 @@ class PredictionProtocol:
         topic = f"{self.PREDICTION_TOPIC_PREFIX}{stream_id}"
         try:
             await self.peers.broadcast(topic, prediction.to_dict())
-            logger.debug(f"Published prediction for {stream_id[:16]}... value={value}")
+            logger.debug(f"Published prediction for {stream_id} value={value}")
             return prediction
         except Exception as e:
             logger.warning(f"Failed to publish prediction: {e}")
@@ -451,7 +451,7 @@ class PredictionProtocol:
         try:
             await self.peers.broadcast(self.SCORE_TOPIC, prediction_score.to_dict())
             logger.debug(
-                f"Scored prediction {prediction.hash[:16]}... "
+                f"Scored prediction {prediction.hash} "
                 f"score={score:.3f}"
             )
             return prediction_score
@@ -475,7 +475,7 @@ class PredictionProtocol:
             self._score_cache[stream_id].append(score)
 
             logger.debug(
-                f"Received score for {score.prediction_hash[:16]}... "
+                f"Received score for {score.prediction_hash} "
                 f"score={score.score:.3f}"
             )
 

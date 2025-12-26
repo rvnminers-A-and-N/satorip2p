@@ -155,10 +155,10 @@ class MessageStore:
         if len(self._local_store[target]) >= self.max_queue_size:
             # Remove oldest message
             self._local_store[target].pop(0)
-            logger.warning(f"Queue full for {target[:16]}..., dropped oldest message")
+            logger.warning(f"Queue full for {target}, dropped oldest message")
 
         self._local_store[target].append(envelope)
-        logger.debug(f"Stored message {envelope.message_id[:8]}... for {target[:16]}...")
+        logger.debug(f"Stored message {envelope.message_id} for {target}")
         return True
 
     async def _replicate_to_relays(self, envelope: MessageEnvelope) -> bool:
@@ -181,7 +181,7 @@ class MessageStore:
                 if success:
                     replicated_count += 1
             except Exception as e:
-                logger.warning(f"Failed to replicate to {relay_id[:16]}...: {e}")
+                logger.warning(f"Failed to replicate to {relay_id}: {e}")
 
         logger.debug(f"Replicated to {replicated_count}/{len(relays)} relays")
         return replicated_count > 0
@@ -234,7 +234,7 @@ class MessageStore:
             key = f"{self.PENDING_KEY_PREFIX}{target_peer_str}"
             await self.dht.provide(key)
             self._announced_for.add(target_peer)
-            logger.debug(f"Announced holding messages for {target_peer_str[:16]}...")
+            logger.debug(f"Announced holding messages for {target_peer_str}")
         except Exception as e:
             logger.warning(f"Failed to announce in DHT: {e}")
 
@@ -320,7 +320,7 @@ class MessageStore:
             return messages
 
         except Exception as e:
-            logger.debug(f"Failed to fetch from {holder_id[:16]}...: {e}")
+            logger.debug(f"Failed to fetch from {holder_id}: {e}")
             return []
 
     # ========== Delivery Methods ==========
@@ -344,7 +344,7 @@ class MessageStore:
         delivered = 0
         for envelope in messages:
             if envelope.is_expired():
-                logger.debug(f"Message {envelope.message_id[:8]}... expired, dropping")
+                logger.debug(f"Message {envelope.message_id} expired, dropping")
                 continue
 
             try:
@@ -356,7 +356,7 @@ class MessageStore:
                 # Re-queue for retry
                 self._local_store[peer_id].append(envelope)
 
-        logger.info(f"Delivered {delivered}/{len(messages)} messages to {peer_id[:16]}...")
+        logger.info(f"Delivered {delivered}/{len(messages)} messages to {peer_id}")
         return delivered
 
     async def _deliver_message(self, peer_id: str, envelope: MessageEnvelope) -> bool:
@@ -425,7 +425,7 @@ class MessageStore:
         await self._announce_holding(envelope.target_peer)
 
         await stream.write(json.dumps({"status": "ok"}).encode())
-        logger.debug(f"Stored message for {envelope.target_peer[:16]}... (relay)")
+        logger.debug(f"Stored message for {envelope.target_peer} (relay)")
 
     async def _handle_retrieve(self, stream, data: dict) -> None:
         """Handle a retrieve request."""
@@ -447,7 +447,7 @@ class MessageStore:
                     })
 
         await stream.write(json.dumps({"status": "ok", "messages": messages}).encode())
-        logger.debug(f"Sent {len(messages)} messages to {target_peer[:16]}...")
+        logger.debug(f"Sent {len(messages)} messages to {target_peer}")
 
     # ========== Maintenance ==========
 

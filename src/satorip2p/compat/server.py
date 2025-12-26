@@ -418,7 +418,7 @@ class ServerAPI:
             reward_address=wallet_address,
         )
 
-        logger.info(f"Checkin successful for {wallet_address[:16]}...")
+        logger.info(f"Checkin successful for {wallet_address}")
         return self._json_response(details.to_dict())
 
     async def _handle_register_wallet(self, headers: dict, body: bytes) -> str:
@@ -439,7 +439,7 @@ class ServerAPI:
             **payload,
         }
 
-        logger.info(f"Wallet registered: {wallet_address[:16]}...")
+        logger.info(f"Wallet registered: {wallet_address}")
         return self._json_response({"status": "success", "address": wallet_address})
 
     async def _handle_register_stream(self, headers: dict, body: bytes) -> str:
@@ -489,7 +489,7 @@ class ServerAPI:
         # Register with P2P network
         # The actual publishing will happen when data is sent
 
-        logger.info(f"Stream registered: {stream_id[:16]}... by {wallet_address[:16]}...")
+        logger.info(f"Stream registered: {stream_id} by {wallet_address}")
         return self._json_response({
             "status": "success",
             "uuid": stream_id,
@@ -532,7 +532,7 @@ class ServerAPI:
         # Subscribe via P2P
         # Note: Actual callback setup would be done by the caller
 
-        logger.info(f"Subscription registered: {stream_id[:16]}... for {wallet_address[:16]}...")
+        logger.info(f"Subscription registered: {stream_id} for {wallet_address}")
         return self._json_response({
             "status": "success",
             "uuid": stream_id,

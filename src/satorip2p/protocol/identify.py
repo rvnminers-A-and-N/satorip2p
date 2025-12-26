@@ -28,7 +28,8 @@ logger = logging.getLogger("satorip2p.protocol.identify")
 IDENTIFY_TOPIC = "identify"
 IDENTIFY_REQUEST_TOPIC = "identify/request"
 IDENTIFY_PROTOCOL_VERSION = "1.0.0"
-IDENTITY_CACHE_TTL = 300  # 5 minutes
+# Note: No TTL - known peers never auto-expire. Users can manually forget peers if needed.
+IDENTITY_REANNOUNCE_INTERVAL = 300  # Re-announce every 5 minutes to keep peers informed
 
 
 @dataclass
@@ -101,6 +102,7 @@ class IdentifyProtocol:
         self._identity_timestamps: Dict[str, float] = {}  # peer_id -> last_seen
         self._started = False
         self._trio_token = None  # Store trio token for cross-thread calls
+        self._reannounce_task_scope = None  # For cancelling reannounce loop
 
     async def start(self) -> None:
         """Start the identify protocol."""
@@ -125,6 +127,10 @@ class IdentifyProtocol:
 
         # Announce ourselves
         await self.announce()
+
+        # Start periodic re-announce loop in background
+        if hasattr(self._peers, '_nursery') and self._peers._nursery:
+            self._peers._nursery.start_soon(self._reannounce_loop)
 
     async def stop(self) -> None:
         """Stop the identify protocol."""
@@ -153,9 +159,27 @@ class IdentifyProtocol:
                 IDENTIFY_TOPIC,
                 json.dumps(identity.to_dict()).encode()
             )
-            logger.debug(f"Announced identity: {identity.peer_id[:16]}...")
+            logger.debug(f"Announced identity: peer_id={identity.peer_id}")
         except Exception as e:
             logger.warning(f"Failed to announce identity: {e}")
+
+    async def _reannounce_loop(self) -> None:
+        """Periodically re-announce identity to keep peers fresh."""
+        import trio
+        logger.info("Identity re-announce loop started")
+        try:
+            while self._started:
+                await trio.sleep(IDENTITY_REANNOUNCE_INTERVAL)
+                if not self._started:
+                    break
+                try:
+                    await self.announce()
+                    logger.debug("Re-announced identity to network")
+                except Exception as e:
+                    logger.warning(f"Re-announce failed: {e}")
+        except trio.Cancelled:
+            pass
+        logger.info("Identity re-announce loop stopped")
 
     async def request_identity(self, target_peer_id: Optional[str] = None) -> None:
         """
@@ -186,25 +210,37 @@ class IdentifyProtocol:
 
     def get_known_peers(self) -> Dict[str, PeerIdentity]:
         """Get all known peer identities."""
-        self._cleanup_stale()
         return dict(self._known_peers)
 
     def get_peer_identity(self, peer_id: str) -> Optional[PeerIdentity]:
         """Get identity for a specific peer."""
-        self._cleanup_stale()
         return self._known_peers.get(peer_id)
 
     def get_peers_by_role(self, role: str) -> List[PeerIdentity]:
         """Get all peers with a specific role."""
-        self._cleanup_stale()
         return [
             identity for identity in self._known_peers.values()
             if role in identity.roles
         ]
 
+    def forget_peer(self, peer_id: str) -> bool:
+        """
+        Remove a peer from the known peers list.
+
+        Args:
+            peer_id: libp2p peer ID to forget
+
+        Returns:
+            True if peer was found and removed, False otherwise
+        """
+        if peer_id in self._known_peers:
+            del self._known_peers[peer_id]
+            logger.info(f"Forgot peer: {peer_id}")
+            return True
+        return False
+
     def get_stats(self) -> dict:
         """Get identify protocol statistics."""
-        self._cleanup_stale()
         return {
             "started": self._started,
             "known_peers": len(self._known_peers),
@@ -289,8 +325,8 @@ class IdentifyProtocol:
             self._identity_timestamps[identity.peer_id] = time.time()
 
             logger.info(
-                f"Received identity from {identity.peer_id[:16]}... "
-                f"(roles: {identity.roles}, addr: {identity.evrmore_address[:16]}...)"
+                f"Received identity from peer_id={identity.peer_id} "
+                f"(roles: {identity.roles}, evrmore_address: {identity.evrmore_address})"
             )
 
         except Exception as e:
@@ -342,13 +378,5 @@ class IdentifyProtocol:
         except Exception as e:
             logger.debug(f"Error handling identity request: {e}")
 
-    def _cleanup_stale(self) -> None:
-        """Remove stale identities."""
-        now = time.time()
-        stale = [
-            peer_id for peer_id, ts in self._identity_timestamps.items()
-            if now - ts > IDENTITY_CACHE_TTL
-        ]
-        for peer_id in stale:
-            self._known_peers.pop(peer_id, None)
-            self._identity_timestamps.pop(peer_id, None)
+    # Note: _cleanup_stale removed - known peers never auto-expire.
+    # Users can manually forget peers using forget_peer() if needed.

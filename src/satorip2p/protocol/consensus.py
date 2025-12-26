@@ -303,7 +303,7 @@ class ConsensusManager:
                     CONSENSUS_VOTE_TOPIC,
                     vote.to_dict()
                 )
-                logger.info(f"Broadcasted vote for merkle_root={merkle_root[:16]}...")
+                logger.info(f"Broadcasted vote for merkle_root={merkle_root}")
             except Exception as e:
                 logger.error(f"Failed to broadcast vote: {e}")
 
@@ -354,7 +354,7 @@ class ConsensusManager:
             logger.debug(f"Duplicate vote from {vote.node_id}, using latest")
 
         self._votes[vote.node_id] = vote
-        logger.debug(f"Received vote from {vote.node_id}: {vote.merkle_root[:16]}...")
+        logger.debug(f"Received vote from node_id={vote.node_id}: merkle_root={vote.merkle_root}")
 
         return True
 

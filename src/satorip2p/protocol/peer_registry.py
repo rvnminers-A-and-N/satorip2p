@@ -245,7 +245,7 @@ class PeerRegistry:
         await self._broadcast_announcement(announcement)
 
         logger.info(
-            f"Announced: {self.evrmore_address[:16]}... "
+            f"Announced: evrmore_address={self.evrmore_address} "
             f"capabilities={capabilities}"
         )
 
@@ -287,14 +287,14 @@ class PeerRegistry:
             # Verify signature
             if not await self.verify_announcement(announcement):
                 logger.debug(
-                    f"Invalid signature from {announcement.evrmore_address[:16]}..."
+                    f"Invalid signature from evrmore_address={announcement.evrmore_address}"
                 )
                 return
 
             # Check if expired
             if announcement.is_expired():
                 logger.debug(
-                    f"Expired announcement from {announcement.evrmore_address[:16]}..."
+                    f"Expired announcement from evrmore_address={announcement.evrmore_address}"
                 )
                 return
 
@@ -302,8 +302,8 @@ class PeerRegistry:
             self._known_peers[announcement.evrmore_address] = announcement
 
             logger.debug(
-                f"Received announcement from {announcement.evrmore_address[:16]}... "
-                f"peer_id={announcement.peer_id[:16]}..."
+                f"Received announcement from evrmore_address={announcement.evrmore_address} "
+                f"peer_id={announcement.peer_id}"
             )
 
             # Notify callbacks
@@ -395,6 +395,32 @@ class PeerRegistry:
         if announcement and not announcement.is_expired():
             return announcement
         return None
+
+    def forget_peer(self, peer_id: str = None, evrmore_address: str = None) -> bool:
+        """
+        Remove a peer from the known peers list.
+
+        Args:
+            peer_id: libp2p peer ID to forget
+            evrmore_address: Evrmore address to forget
+
+        Returns:
+            True if peer was found and removed, False otherwise
+        """
+        if evrmore_address and evrmore_address in self._known_peers:
+            del self._known_peers[evrmore_address]
+            logger.info(f"Forgot peer with evrmore_address: {evrmore_address}")
+            return True
+
+        if peer_id:
+            # Find peer by peer_id
+            for addr, announcement in list(self._known_peers.items()):
+                if announcement.peer_id == peer_id:
+                    del self._known_peers[addr]
+                    logger.info(f"Forgot peer with peer_id: {peer_id}")
+                    return True
+
+        return False
 
     # ========== Verification Methods ==========
 

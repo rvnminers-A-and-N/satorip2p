@@ -399,10 +399,10 @@ class UptimeTracker:
         logger.info("Heartbeat loop started")
         while self._is_heartbeating:
             try:
-                # Send heartbeat
-                heartbeat = self.send_heartbeat()
+                # Send heartbeat (async version)
+                heartbeat = await self.send_heartbeat_async()
                 if heartbeat:
-                    logger.debug(f"Sent heartbeat: {heartbeat.node_id[:16]}...")
+                    logger.info(f"Sent heartbeat: node_id={heartbeat.node_id} status={heartbeat.status_message}")
                 else:
                     logger.debug("Heartbeat not sent (no active round)")
             except Exception as e:
@@ -430,9 +430,9 @@ class UptimeTracker:
         self._round_start = round_start
         logger.info(f"Uptime tracking started for round: {round_id}")
 
-    def send_heartbeat(self, roles: Optional[List[str]] = None) -> Optional[Heartbeat]:
+    async def send_heartbeat_async(self, roles: Optional[List[str]] = None) -> Optional[Heartbeat]:
         """
-        Send a heartbeat to the network.
+        Send a heartbeat to the network (async version).
 
         Args:
             roles: List of roles this node is performing
@@ -480,16 +480,73 @@ class UptimeTracker:
         # Record our own heartbeat
         self.receive_heartbeat(heartbeat)
 
-        # Broadcast via PubSub
+        # Broadcast via PubSub (async)
         if self.peers:
             try:
-                self.peers.broadcast(
+                await self.peers.broadcast(
                     HEARTBEAT_TOPIC,
                     heartbeat.to_dict()
                 )
-                logger.debug(f"Sent heartbeat: {heartbeat.status_message}")
+                logger.debug(f"Broadcast heartbeat: {heartbeat.status_message}")
             except Exception as e:
                 logger.error(f"Failed to broadcast heartbeat: {e}")
+
+        self._last_heartbeat = now
+        return heartbeat
+
+    def send_heartbeat(self, roles: Optional[List[str]] = None) -> Optional[Heartbeat]:
+        """
+        Send a heartbeat to the network (sync version - for backwards compatibility).
+        Note: This version cannot broadcast over pubsub. Use send_heartbeat_async instead.
+
+        Args:
+            roles: List of roles this node is performing
+
+        Returns:
+            The heartbeat sent, or None if not in a round
+        """
+        if not self._current_round:
+            logger.debug("No active round, not sending heartbeat")
+            return None
+
+        now = int(time.time())
+
+        # Rate limit heartbeats
+        if now - self._last_heartbeat < HEARTBEAT_INTERVAL - 5:
+            return None
+
+        # Get peer_id from peers if available (dynamic lookup)
+        current_peer_id = self.peer_id
+        if not current_peer_id and self.peers:
+            current_peer_id = getattr(self.peers, 'peer_id', '') or ''
+
+        # Create heartbeat with all fields
+        heartbeat = Heartbeat(
+            node_id=self.node_id,
+            timestamp=now,
+            round_id=self._current_round,
+            evrmore_address=self.evrmore_address,
+            peer_id=current_peer_id,
+            roles=roles or ["predictor"],
+            stake=self.stake,
+            version=HEARTBEAT_PROTOCOL_VERSION,
+            status_message=Heartbeat.get_random_status(),
+        )
+
+        # Sign the heartbeat if we have a wallet or private key
+        if self.wallet is not None or self.private_key:
+            heartbeat.signature = self._sign_heartbeat(heartbeat)
+
+        # Validate heartbeat before broadcast (warn but don't block)
+        is_valid, error = heartbeat.is_valid_for_broadcast()
+        if not is_valid:
+            logger.debug(f"Heartbeat validation note: {error}")
+
+        # Record our own heartbeat
+        self.receive_heartbeat(heartbeat)
+
+        # Note: Cannot broadcast in sync version - use send_heartbeat_async
+        logger.warning("send_heartbeat (sync) called - use send_heartbeat_async for network broadcast")
 
         self._last_heartbeat = now
         return heartbeat

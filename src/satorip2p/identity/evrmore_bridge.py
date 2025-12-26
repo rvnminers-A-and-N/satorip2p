@@ -156,7 +156,7 @@ class EvrmoreIdentityBridge:
 
             # Create libp2p key pair from raw bytes
             self._libp2p_private_key = create_new_key_pair(self._entropy)
-            logger.debug(f"Created libp2p key for {self.evrmore_address[:16]}...")
+            logger.debug(f"Created libp2p key for {self.evrmore_address}")
 
             return self._libp2p_private_key
 
@@ -202,7 +202,7 @@ class EvrmoreIdentityBridge:
             peer_id = PeerID.from_pubkey(public_key)
             self._peer_id = str(peer_id)
 
-            logger.debug(f"PeerID for {self.evrmore_address}: {self._peer_id[:16]}...")
+            logger.debug(f"PeerID for {self.evrmore_address}: {self._peer_id}")
             return self._peer_id
 
         except Exception as e:

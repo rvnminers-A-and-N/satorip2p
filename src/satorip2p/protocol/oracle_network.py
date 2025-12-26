@@ -244,7 +244,7 @@ class OracleNetwork:
         # Broadcast registration
         await self._broadcast_oracle_registration(registration)
 
-        logger.info(f"Registered as oracle for stream {stream_id[:16]}...")
+        logger.info(f"Registered as oracle for stream_id={stream_id}")
         return registration
 
     async def _broadcast_oracle_registration(self, registration: OracleRegistration) -> bool:
@@ -278,8 +278,8 @@ class OracleNetwork:
             self._oracle_registrations[stream_id][registration.oracle] = registration
 
             logger.debug(
-                f"Received oracle registration for {stream_id[:16]}... "
-                f"from {registration.oracle[:16]}..."
+                f"Received oracle registration for stream_id={stream_id} "
+                f"from oracle={registration.oracle}"
             )
 
         except Exception as e:
@@ -316,7 +316,7 @@ class OracleNetwork:
                 )
 
         self._subscribed_streams[stream_id].append(callback)
-        logger.debug(f"Subscribed to stream {stream_id[:16]}...")
+        logger.debug(f"Subscribed to stream_id={stream_id}")
         return True
 
     async def unsubscribe_from_stream(self, stream_id: str) -> bool:
@@ -342,7 +342,7 @@ class OracleNetwork:
                 pass
 
         del self._subscribed_streams[stream_id]
-        logger.debug(f"Unsubscribed from stream {stream_id[:16]}...")
+        logger.debug(f"Unsubscribed from stream_id={stream_id}")
         return True
 
     async def _on_observation_received(self, stream_id: str, data: dict) -> None:
@@ -353,12 +353,12 @@ class OracleNetwork:
             # Verify hash
             expected_hash = observation.compute_hash()
             if observation.hash != expected_hash:
-                logger.debug(f"Invalid observation hash from {observation.oracle[:16]}...")
+                logger.debug(f"Invalid observation hash from oracle={observation.oracle}")
                 return
 
             # Verify signature
             if not await self._verify_observation(observation):
-                logger.debug(f"Invalid observation signature from {observation.oracle[:16]}...")
+                logger.debug(f"Invalid observation signature from oracle={observation.oracle}")
                 return
 
             # Cache observation
@@ -379,7 +379,7 @@ class OracleNetwork:
                         logger.debug(f"Observation callback error: {e}")
 
             logger.debug(
-                f"Received observation for {stream_id[:16]}... "
+                f"Received observation for stream_id={stream_id} "
                 f"value={observation.value}"
             )
 
@@ -432,7 +432,7 @@ class OracleNetwork:
         """
         # Check if we're registered as oracle
         if stream_id not in self._my_registrations:
-            logger.warning(f"Not registered as oracle for {stream_id[:16]}...")
+            logger.warning(f"Not registered as oracle for stream_id={stream_id}")
             # Auto-register
             await self.register_as_oracle(stream_id)
 
@@ -460,7 +460,7 @@ class OracleNetwork:
         topic = f"{self.STREAM_TOPIC_PREFIX}{stream_id}"
         try:
             await self.peers.broadcast(topic, observation.to_dict())
-            logger.debug(f"Published observation for {stream_id[:16]}... value={value}")
+            logger.debug(f"Published observation for stream_id={stream_id} value={value}")
             return observation
         except Exception as e:
             logger.warning(f"Failed to publish observation: {e}")

@@ -806,14 +806,14 @@ class Peers:
                 # Queue for later delivery
                 payload = serialize_message(message)
                 await self._message_store.store_for_peer(peer_id, payload)
-                logger.debug(f"Queued message for offline peer {peer_id[:16]}...")
+                logger.debug(f"Queued message for offline peer {peer_id}")
                 return True
             else:
-                logger.debug(f"Peer {peer_id[:16]}... not connected")
+                logger.debug(f"Peer {peer_id} not connected")
                 return False
 
         except Exception as e:
-            logger.error(f"Failed to send to {peer_id[:16]}...: {e}")
+            logger.error(f"Failed to send to {peer_id}: {e}")
             return False
 
     async def broadcast(
@@ -924,13 +924,13 @@ class Peers:
             response = self._response_data.pop(request_id, None)
 
             if cancel_scope.cancelled_caught:
-                logger.warning(f"Request to {peer_id[:16]}... timed out")
+                logger.warning(f"Request to {peer_id} timed out")
                 return None
 
             return response
 
         except Exception as e:
-            logger.error(f"Request to {peer_id[:16]}... failed: {e}")
+            logger.error(f"Request to {peer_id} failed: {e}")
             # Cleanup on error
             self._pending_responses.pop(request_id, None)
             self._response_data.pop(request_id, None)
@@ -976,7 +976,7 @@ class Peers:
             self._callbacks[stream_id] = []
         self._callbacks[stream_id].append(callback)
         self._my_subscriptions.add(stream_id)
-        logger.debug(f"Subscribed to stream {stream_id[:16]}...")
+        logger.debug(f"Subscribed to stream {stream_id}")
 
     async def subscribe_async(self, stream_id: str, callback: Callable[[str, Any], None]) -> None:
         """
@@ -1013,7 +1013,7 @@ class Peers:
         """Unsubscribe from a data stream (local only)."""
         self._callbacks.pop(stream_id, None)
         self._my_subscriptions.discard(stream_id)
-        logger.debug(f"Unsubscribed from stream {stream_id[:16]}...")
+        logger.debug(f"Unsubscribed from stream {stream_id}")
 
     async def unsubscribe_async(self, stream_id: str) -> None:
         """Unsubscribe from a data stream with network unregistration."""
@@ -1206,7 +1206,7 @@ class Peers:
             current_time = time.time()
             backoff_info = {}
             for (peer_id, topic), expiry in self._pubsub.router.back_off.items():
-                key = f"{str(peer_id)[:16]}...:{topic}"
+                key = f"{str(peer_id)}:{topic}"
                 backoff_info[key] = {
                     "expires_in": round(expiry - current_time, 1),
                     "expired": expiry < current_time
@@ -1286,7 +1286,7 @@ class Peers:
             if peer_info.peer_id in network.connections:
                 existing_conns = network.connections.get(peer_info.peer_id, [])
                 if existing_conns:
-                    logger.debug(f"Already connected to {target_peer_id[:16]}...")
+                    logger.debug(f"Already connected to {target_peer_id}")
                     return True
 
             # Simultaneous connect handling using peer ID comparison
@@ -1298,7 +1298,7 @@ class Peers:
                 self._pending_connections = set()
 
             if target_peer_id in self._pending_connections:
-                logger.debug(f"Connection to {target_peer_id[:16]}... already pending")
+                logger.debug(f"Connection to {target_peer_id} already pending")
                 # Wait briefly and check if connection succeeded
                 await trio.sleep(1.0)
                 if peer_info.peer_id in network.connections:
@@ -1308,27 +1308,27 @@ class Peers:
             # Peer ID tiebreaker: lower ID waits, higher ID connects
             if my_peer_id < target_peer_id:
                 # We have lower ID - wait briefly for them to connect to us
-                logger.debug(f"Peer ID tiebreaker: waiting for {target_peer_id[:16]}... to connect")
+                logger.debug(f"Peer ID tiebreaker: waiting for {target_peer_id} to connect")
                 await trio.sleep(0.5)
                 # Check if they connected to us
                 if peer_info.peer_id in network.connections:
-                    logger.info(f"Peer {target_peer_id[:16]}... connected to us")
+                    logger.info(f"Peer {target_peer_id} connected to us")
                     return True
                 # They didn't connect, proceed with our connection
-                logger.debug(f"Proceeding with connection to {target_peer_id[:16]}...")
+                logger.debug(f"Proceeding with connection to {target_peer_id}")
 
             self._pending_connections.add(target_peer_id)
             try:
-                logger.info(f"Connecting to peer {target_peer_id[:16]}...")
+                logger.info(f"Connecting to peer {target_peer_id}")
 
                 with trio.move_on_after(timeout) as cancel_scope:
                     await self._host.connect(peer_info)
 
                 if cancel_scope.cancelled_caught:
-                    logger.warning(f"Connection to {target_peer_id[:16]}... timed out")
+                    logger.warning(f"Connection to {target_peer_id} timed out")
                     return False
 
-                logger.info(f"Connected to peer: {target_peer_id[:16]}...")
+                logger.info(f"Connected to peer: {target_peer_id}")
                 return True
             finally:
                 self._pending_connections.discard(target_peer_id)
@@ -1400,11 +1400,11 @@ class Peers:
             latencies = await self._ping_service.ping(peer_id, count, timeout)
             if latencies:
                 avg_rtt = sum(latencies) / len(latencies)
-                logger.debug(f"Ping to {peer_id[:16]}...: avg={avg_rtt*1000:.2f}ms")
+                logger.debug(f"Ping to {peer_id}: avg={avg_rtt*1000:.2f}ms")
             return latencies
 
         except Exception as e:
-            logger.debug(f"Ping to {peer_id[:16]}... failed: {e}")
+            logger.debug(f"Ping to {peer_id} failed: {e}")
             return None
 
     def get_known_peer_identities(self) -> Dict[str, Any]:
@@ -1458,6 +1458,22 @@ class Peers:
             logger.debug("Identity announced")
         except Exception as e:
             logger.warning(f"Failed to announce identity: {e}")
+
+    def forget_peer(self, peer_id: str) -> bool:
+        """
+        Remove a peer from the known peers list.
+
+        Args:
+            peer_id: libp2p peer ID to forget
+
+        Returns:
+            True if peer was found and removed, False otherwise
+        """
+        if not self._identify_handler:
+            logger.warning("Identify protocol not initialized")
+            return False
+
+        return self._identify_handler.forget_peer(peer_id)
 
     async def check_reachability(self) -> bool:
         """
@@ -2302,6 +2318,6 @@ class Peers:
         status = "running" if self._started else "stopped"
         return (
             f"Peers(status={status}, "
-            f"peer_id={self.peer_id[:16] if self.peer_id else 'N/A'}..., "
+            f"peer_id={self.peer_id if self.peer_id else 'N/A'}, "
             f"connected={self.connected_peers})"
         )

@@ -231,7 +231,7 @@ class PubSubServer:
 
             # Accept connection
             ws = await request.accept()
-            logger.info(f"Client connected: {uid[:16]}...")
+            logger.info(f"Client connected: {uid}")
 
             # Create send channel for this client
             send_channel, receive_channel = trio.open_memory_channel(100)
@@ -253,7 +253,7 @@ class PubSubServer:
                     )
 
             except Exception as e:
-                logger.debug(f"Client {uid[:16]}... disconnected: {e}")
+                logger.debug(f"Client {uid} disconnected: {e}")
 
             finally:
                 # Cleanup
@@ -264,7 +264,7 @@ class PubSubServer:
                     await receive_channel.aclose()
                 except Exception:
                     pass
-                logger.info(f"Client disconnected: {uid[:16]}...")
+                logger.info(f"Client disconnected: {uid}")
 
         except Exception as e:
             logger.error(f"Connection handler error: {e}")
@@ -314,7 +314,7 @@ class PubSubServer:
             - notice:json_payload - Notice message (e.g., disconnect)
         """
         if not message or ":" not in message:
-            logger.debug(f"Invalid message format from {client.uid[:16]}...")
+            logger.debug(f"Invalid message format from {client.uid}")
             return
 
         try:
@@ -341,10 +341,10 @@ class PubSubServer:
                 await self._handle_notice_command(client, payload_str)
 
             else:
-                logger.debug(f"Unknown command '{command}' from {client.uid[:16]}...")
+                logger.debug(f"Unknown command '{command}' from {client.uid}")
 
         except json.JSONDecodeError as e:
-            logger.warning(f"JSON decode error from {client.uid[:16]}...: {e}")
+            logger.warning(f"JSON decode error from {client.uid}: {e}")
         except Exception as e:
             logger.error(f"Message processing error: {e}")
 
@@ -388,7 +388,7 @@ class PubSubServer:
                 if payload_str and len(payload_str) > 8:
                     await self._subscribe_client_to_stream(client, payload_str)
 
-            logger.info(f"Client {client.uid[:16]}... key command processed, {len(client.subscriptions)} subscriptions")
+            logger.info(f"Client {client.uid} key command processed, {len(client.subscriptions)} subscriptions")
 
         except json.JSONDecodeError:
             # Not JSON, might be a simple key/identifier
@@ -401,7 +401,7 @@ class PubSubServer:
             return
 
         await self._subscribe_client_to_stream(client, stream_id)
-        logger.debug(f"Client {client.uid[:16]}... subscribed to {stream_id[:16]}...")
+        logger.debug(f"Client {client.uid} subscribed to {stream_id}")
 
     async def _handle_publish_command(self, client: PubSubClient, payload_str: str) -> None:
         """
@@ -423,7 +423,7 @@ class PubSubServer:
             obs_hash = payload.get("hash")
 
             if not topic:
-                logger.warning(f"Publish from {client.uid[:16]}... missing topic")
+                logger.warning(f"Publish from {client.uid} missing topic")
                 return
 
             # Construct message for P2P broadcast
@@ -442,10 +442,10 @@ class PubSubServer:
             # Also broadcast to other WebSocket clients subscribed to this stream
             await self._broadcast_to_clients(topic, payload_str, exclude_uid=client.uid)
 
-            logger.debug(f"Published to {topic[:16]}... from {client.uid[:16]}...")
+            logger.debug(f"Published to {topic} from {client.uid}")
 
         except json.JSONDecodeError as e:
-            logger.warning(f"Invalid publish payload from {client.uid[:16]}...: {e}")
+            logger.warning(f"Invalid publish payload from {client.uid}: {e}")
 
     async def _handle_notice_command(self, client: PubSubClient, payload_str: str) -> None:
         """Handle 'notice' command - notification messages."""
@@ -456,7 +456,7 @@ class PubSubServer:
 
             if topic == "connection" and data == "False":
                 # Client is disconnecting gracefully
-                logger.info(f"Client {client.uid[:16]}... sent disconnect notice")
+                logger.info(f"Client {client.uid} sent disconnect notice")
                 client.connected = False
 
         except json.JSONDecodeError:
@@ -508,7 +508,7 @@ class PubSubServer:
         # Subscribe to P2P stream
         await self.peers.subscribe_async(stream_id, on_message)
 
-        logger.debug(f"P2P subscription set up for {stream_id[:16]}...")
+        logger.debug(f"P2P subscription set up for {stream_id}")
 
     async def _broadcast_to_clients(
         self,

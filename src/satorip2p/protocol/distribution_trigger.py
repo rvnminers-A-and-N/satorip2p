@@ -369,7 +369,7 @@ class DistributionTrigger:
                 round_id=round_summary.round_id,
             )
 
-            logger.info(f"Built unsigned TX: {self._unsigned_tx.tx_hash[:16]}... "
+            logger.info(f"Built unsigned TX: {self._unsigned_tx.tx_hash} "
                        f"({len(recipients)} recipients, fee: {self._unsigned_tx.fee} sat)")
 
             return self._unsigned_tx.tx_hash
@@ -614,7 +614,7 @@ class RewardCoordinator:
         # Submit our vote with the merkle root
         vote = self.consensus_manager.submit_vote(round_summary.merkle_root)
         if vote:
-            logger.info(f"Submitted consensus vote for merkle_root={round_summary.merkle_root[:16]}...")
+            logger.info(f"Submitted consensus vote for merkle_root={round_summary.merkle_root}")
             return True
 
         return False
@@ -640,8 +640,8 @@ class RewardCoordinator:
             else:
                 logger.warning(
                     f"Our merkle root doesn't match consensus: "
-                    f"ours={self._round_summary.merkle_root[:16]}... "
-                    f"consensus={result.winning_merkle_root[:16] if result.winning_merkle_root else 'None'}..."
+                    f"ours={self._round_summary.merkle_root} "
+                    f"consensus={result.winning_merkle_root if result.winning_merkle_root else 'None'}"
                 )
 
         return None

@@ -295,7 +295,7 @@ class SignerNode:
             merkle_root: The merkle root we calculated locally
         """
         self._calculated_merkle_roots[round_id] = merkle_root
-        logger.debug(f"Registered merkle root for round {round_id}: {merkle_root[:16]}...")
+        logger.debug(f"Registered merkle root for round_id={round_id}: merkle_root={merkle_root}")
 
         # Clean up old entries (keep last 100 rounds)
         if len(self._calculated_merkle_roots) > 100:
@@ -541,18 +541,18 @@ class SignerNode:
         if our_merkle_root is not None:
             if our_merkle_root != request.merkle_root:
                 logger.warning(
-                    f"Merkle root mismatch for round {request.round_id}: "
-                    f"request={request.merkle_root[:16]}... "
-                    f"calculated={our_merkle_root[:16]}..."
+                    f"Merkle root mismatch for round_id={request.round_id}: "
+                    f"request={request.merkle_root} "
+                    f"calculated={our_merkle_root}"
                 )
                 return False
-            logger.debug(f"Merkle root verified for round {request.round_id}")
+            logger.debug(f"Merkle root verified for round_id={request.round_id}")
         else:
             # We don't have a local calculation - log but allow
             # This can happen if we joined mid-round or are catching up
             logger.info(
-                f"No local merkle root for round {request.round_id}, "
-                f"accepting request merkle root: {request.merkle_root[:16]}..."
+                f"No local merkle root for round_id={request.round_id}, "
+                f"accepting request merkle_root={request.merkle_root}"
             )
 
         return True

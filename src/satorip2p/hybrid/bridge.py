@@ -247,7 +247,7 @@ class HybridBridge:
 
                 await self.p2p.subscribe_async(stream_id, p2p_callback)
                 success = True
-                logger.debug(f"P2P subscription: {stream_id[:16]}...")
+                logger.debug(f"P2P subscription: {stream_id}")
             except Exception as e:
                 logger.warning(f"P2P subscribe failed: {e}")
 
@@ -256,7 +256,7 @@ class HybridBridge:
             try:
                 await self._central.subscribe(stream_id)
                 success = True
-                logger.debug(f"Central subscription: {stream_id[:16]}...")
+                logger.debug(f"Central subscription: {stream_id}")
             except Exception as e:
                 logger.warning(f"Central subscribe failed: {e}")
 
@@ -340,7 +340,7 @@ class HybridBridge:
                 }
                 await self.p2p.publish(stream_id, message)
                 success = True
-                logger.debug(f"Published to P2P: {stream_id[:16]}...")
+                logger.debug(f"Published to P2P: {stream_id}")
             except Exception as e:
                 logger.warning(f"P2P publish failed: {e}")
                 self._p2p_failures += 1
@@ -356,7 +356,7 @@ class HybridBridge:
                 )
                 if central_success:
                     success = True
-                    logger.debug(f"Published to Central: {stream_id[:16]}...")
+                    logger.debug(f"Published to Central: {stream_id}")
             except Exception as e:
                 logger.warning(f"Central publish failed: {e}")
                 self._central_failures += 1
@@ -404,7 +404,7 @@ class HybridBridge:
             try:
                 callback(stream_id, data)
             except Exception as e:
-                logger.warning(f"Callback error for {stream_id[:16]}...: {e}")
+                logger.warning(f"Callback error for {stream_id}: {e}")
 
     async def _bridge_to_central(self, stream_id: str, data: Any) -> None:
         """Bridge message from P2P to Central."""
@@ -431,7 +431,7 @@ class HybridBridge:
             self._messages_bridged_to_central += 1
 
             if self.config.log_bridge_events:
-                logger.debug(f"Bridged P2P→Central: {stream_id[:16]}...")
+                logger.debug(f"Bridged P2P→Central: {stream_id}")
 
         except Exception as e:
             logger.warning(f"Bridge to central failed: {e}")
@@ -443,7 +443,7 @@ class HybridBridge:
             self._messages_bridged_to_p2p += 1
 
             if self.config.log_bridge_events:
-                logger.debug(f"Bridged Central→P2P: {stream_id[:16]}...")
+                logger.debug(f"Bridged Central→P2P: {stream_id}")
 
         except Exception as e:
             logger.warning(f"Bridge to P2P failed: {e}")

@@ -124,7 +124,7 @@ class SubscriptionManager:
                 stream_id_str = stream_id if isinstance(stream_id, str) else str(stream_id)
                 key = f"{self.SUB_KEY_PREFIX}{stream_id_str}"
                 await self.dht.provide(key)
-                logger.debug(f"Announced subscription: {peer_id[:16]}... -> {stream_id_str[:16]}...")
+                logger.debug(f"Announced subscription: peer_id={peer_id} -> stream_id={stream_id_str}")
                 return True
             except Exception as e:
                 logger.warning(f"Failed to announce subscription to DHT: {e}")
@@ -175,7 +175,7 @@ class SubscriptionManager:
             try:
                 key = f"{self.PUB_KEY_PREFIX}{stream_id}"
                 await self.dht.provide(key.encode())
-                logger.debug(f"Announced publication: {peer_id[:16]}... -> {stream_id[:16]}...")
+                logger.debug(f"Announced publication: peer_id={peer_id} -> stream_id={stream_id}")
                 return True
             except Exception as e:
                 logger.warning(f"Failed to announce publication to DHT: {e}")
@@ -238,7 +238,7 @@ class SubscriptionManager:
 
                 # Update cache
                 self._subscribers[stream_id] = set(peer_ids)
-                logger.debug(f"Found {len(peer_ids)} subscribers for {stream_id_str[:16]}...")
+                logger.debug(f"Found {len(peer_ids)} subscribers for stream_id={stream_id_str}")
                 return peer_ids
             except Exception as e:
                 logger.warning(f"DHT query failed: {e}")

@@ -2305,11 +2305,15 @@ class Peers:
                 logger.info(f"Received message on {stream_id}: {len(msg.data)} bytes")
                 data = deserialize_message(msg.data)
                 if stream_id in self._callbacks:
-                    for callback in self._callbacks[stream_id]:
+                    callbacks = self._callbacks[stream_id]
+                    logger.info(f"Dispatching to {len(callbacks)} callback(s) for {stream_id}")
+                    for callback in callbacks:
                         try:
                             callback(stream_id, data)
                         except Exception as e:
-                            logger.error(f"Callback error: {e}")
+                            logger.error(f"Callback error for {stream_id}: {e}", exc_info=True)
+                else:
+                    logger.warning(f"No callbacks registered for stream {stream_id}")
             except Exception as e:
                 logger.debug(f"Message loop error for {topic}: {e}")
                 break

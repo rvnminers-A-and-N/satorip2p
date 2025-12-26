@@ -207,7 +207,7 @@ class PingProtocol:
     def _on_ping_request(self, stream_id: str, data: Any) -> None:
         """Handle incoming ping request."""
         try:
-            logger.debug(f"_on_ping_request called with stream_id={stream_id}, data type={type(data)}")
+            logger.info(f"_on_ping_request called with stream_id={stream_id}, data type={type(data)}")
 
             # Data may be bytes (raw) or already deserialized dict
             if isinstance(data, bytes):
@@ -219,18 +219,18 @@ class PingProtocol:
                 return
 
             request = PingRequest.from_dict(request_data)
-            logger.debug(f"Parsed ping request: ping_id={request.ping_id}, sender={request.sender_id}, target={request.target_id}")
+            logger.info(f"Parsed ping request: ping_id={request.ping_id}, sender={request.sender_id}, target={request.target_id}")
 
             my_peer_id = self._peers.peer_id
             if not my_peer_id:
                 logger.warning("Cannot respond to ping: my_peer_id is not available")
                 return
 
-            logger.debug(f"Target check: request.target_id={request.target_id} vs my_peer_id={my_peer_id}")
+            logger.info(f"Target check: request.target_id={request.target_id} vs my_peer_id={my_peer_id}")
 
             # Only respond if we're the target
             if request.target_id != my_peer_id:
-                logger.debug(f"Ignoring ping: not targeted at us (target={request.target_id}, me={my_peer_id})")
+                logger.info(f"Ignoring ping: not targeted at us (target={request.target_id}, me={my_peer_id})")
                 return
 
             logger.info(f"Ping targeted at us from {request.sender_id}, responding with pong")

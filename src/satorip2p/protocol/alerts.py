@@ -205,6 +205,15 @@ class TreasuryAlertManager:
         if self._peers:
             self._peers.subscribe(TOPIC_TREASURY_ALERTS, self._on_alert_received)
 
+    async def start(self) -> None:
+        """Start the alert manager (no-op, subscription happens in __init__)."""
+        pass
+
+    async def stop(self) -> None:
+        """Stop the alert manager."""
+        if self._peers:
+            self._peers.unsubscribe(TOPIC_TREASURY_ALERTS)
+
     def set_peers(self, peers) -> None:
         """Set the P2P peers instance."""
         self._peers = peers

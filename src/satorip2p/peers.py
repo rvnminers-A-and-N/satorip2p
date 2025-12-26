@@ -182,6 +182,10 @@ class Peers:
         self._reachability_checker = None  # AutoNAT-like reachability checking
         self._identify_handler = None  # Identify protocol handler
 
+        # Connection change callbacks for real-time UI updates
+        self._connection_callbacks: List[Callable[[str, bool], None]] = []
+        self._last_known_connections: Set[str] = set()
+
     # ========== Lifecycle ==========
 
     async def start(self) -> bool:
@@ -1149,6 +1153,58 @@ class Peers:
     def get_peer_count(self) -> int:
         """Get count of currently connected peers."""
         return len(self.get_connected_peers())
+
+    def on_connection_change(self, callback: Callable[[str, bool], None]) -> None:
+        """
+        Register a callback for connection changes.
+
+        The callback will be called with (peer_id, connected) where:
+        - peer_id: The peer ID that connected/disconnected
+        - connected: True if connected, False if disconnected
+
+        Usage:
+            def my_callback(peer_id: str, connected: bool):
+                if connected:
+                    print(f"Peer {peer_id} connected")
+                else:
+                    print(f"Peer {peer_id} disconnected")
+
+            peers.on_connection_change(my_callback)
+        """
+        self._connection_callbacks.append(callback)
+
+    def check_connection_changes(self) -> List[tuple]:
+        """
+        Check for connection changes since last check.
+
+        Returns list of (peer_id, connected) tuples for any changes.
+        Also triggers registered callbacks.
+        """
+        current = set(self.get_connected_peers())
+        previous = self._last_known_connections
+
+        changes = []
+
+        # Find new connections
+        for peer_id in current - previous:
+            changes.append((peer_id, True))
+
+        # Find disconnections
+        for peer_id in previous - current:
+            changes.append((peer_id, False))
+
+        # Update state
+        self._last_known_connections = current
+
+        # Trigger callbacks
+        for peer_id, connected in changes:
+            for callback in self._connection_callbacks:
+                try:
+                    callback(peer_id, connected)
+                except Exception as e:
+                    logger.warning(f"Connection callback error: {e}")
+
+        return changes
 
     def get_pubsub_debug(self) -> Dict[str, Any]:
         """

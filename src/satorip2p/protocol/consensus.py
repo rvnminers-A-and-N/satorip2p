@@ -234,6 +234,21 @@ class ConsensusManager:
     # PUBLIC API
     # ========================================================================
 
+    async def start(self) -> None:
+        """Start the consensus manager (subscribe to vote topic)."""
+        if self.peers:
+            try:
+                await self.peers.subscribe_async(VOTE_TOPIC, self._handle_vote_message)
+                logger.info("ConsensusManager started, subscribed to vote topic")
+            except Exception as e:
+                logger.warning(f"Failed to subscribe to vote topic: {e}")
+
+    async def stop(self) -> None:
+        """Stop the consensus manager."""
+        if self.peers:
+            self.peers.unsubscribe(VOTE_TOPIC)
+            logger.info("ConsensusManager stopped")
+
     def start_round(self, round_id: str) -> None:
         """
         Start a new consensus round.

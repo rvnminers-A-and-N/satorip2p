@@ -298,7 +298,6 @@ class UptimeTracker:
             wallet: EvrmoreWallet or satorilib EvrmoreIdentity for signing
         """
         self.peers = peers
-        self.node_id = node_id or "unknown"
         self.peer_id = peer_id or ""
         self.stake = stake
         self.private_key = private_key  # Deprecated, kept for backward compatibility
@@ -309,6 +308,17 @@ class UptimeTracker:
             self.evrmore_address = getattr(wallet, 'address', '') or ""
         else:
             self.evrmore_address = evrmore_address or ""
+
+        # node_id should be the evrmore address (unique node identifier)
+        # Fall back to peer_id if no evrmore address available
+        if node_id:
+            self.node_id = node_id
+        elif self.evrmore_address:
+            self.node_id = self.evrmore_address
+        elif self.peer_id:
+            self.node_id = self.peer_id
+        else:
+            self.node_id = "unknown"
 
         # Heartbeat storage: {round_id: {node_id: [timestamps]}}
         self._heartbeats: Dict[str, Dict[str, List[int]]] = defaultdict(lambda: defaultdict(list))

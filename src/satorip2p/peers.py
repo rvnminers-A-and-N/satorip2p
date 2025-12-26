@@ -186,6 +186,11 @@ class Peers:
         self._connection_callbacks: List[Callable[[str, bool], None]] = []
         self._last_known_connections: Set[str] = set()
 
+        # Peer latency tracking (peer_id -> latest RTT in ms)
+        self._peer_latencies: Dict[str, float] = {}
+        self._peer_latency_history: Dict[str, List[float]] = {}  # Last N measurements
+        self._latency_history_size = 10  # Keep last 10 measurements per peer
+
     # ========== Lifecycle ==========
 
     async def start(self) -> bool:
@@ -446,6 +451,9 @@ class Peers:
             # Start background cleanup task
             nursery.start_soon(self._cleanup_task)
 
+            # Start periodic latency measurement task
+            nursery.start_soon(self._latency_measurement_task)
+
             # Retrieve pending messages
             nursery.start_soon(self._retrieve_pending_messages)
 
@@ -655,6 +663,39 @@ class Peers:
             if self._message_store:
                 self._message_store.cleanup_expired()
                 logger.debug("Cleaned up expired messages")
+
+    async def _latency_measurement_task(self) -> None:
+        """
+        Background task to periodically measure latency to all connected peers.
+
+        Pings each connected peer every 30 seconds to maintain fresh RTT data.
+        This enables the UI to show current latency values for all peers.
+        """
+        # Wait for initial startup before measuring
+        await trio.sleep(10)
+
+        while True:
+            try:
+                connected_peers = self.get_connected_peers()
+                if connected_peers and self._ping_service:
+                    for peer_id in connected_peers:
+                        try:
+                            # Single ping with short timeout to avoid blocking
+                            await self.ping_peer(str(peer_id), count=1, timeout=5.0)
+                            # Small delay between pings to avoid flooding
+                            await trio.sleep(0.5)
+                        except Exception as e:
+                            logger.debug(f"Latency measurement to {peer_id} failed: {e}")
+
+                    avg_latency = self.get_network_avg_latency()
+                    if avg_latency is not None:
+                        logger.debug(f"Network avg latency: {avg_latency:.1f}ms across {len(self._peer_latencies)} peers")
+
+            except Exception as e:
+                logger.debug(f"Latency measurement task error: {e}")
+
+            # Measure every 30 seconds
+            await trio.sleep(30)
 
     # ========== Properties ==========
 
@@ -1456,12 +1497,46 @@ class Peers:
             latencies = await self._ping_service.ping(peer_id, count, timeout)
             if latencies:
                 avg_rtt = sum(latencies) / len(latencies)
-                logger.debug(f"Ping to {peer_id}: avg={avg_rtt*1000:.2f}ms")
+                avg_rtt_ms = avg_rtt * 1000
+                logger.debug(f"Ping to {peer_id}: avg={avg_rtt_ms:.2f}ms")
+
+                # Store latency for this peer
+                self._peer_latencies[peer_id] = avg_rtt_ms
+
+                # Update history
+                if peer_id not in self._peer_latency_history:
+                    self._peer_latency_history[peer_id] = []
+                self._peer_latency_history[peer_id].append(avg_rtt_ms)
+                # Keep only last N measurements
+                if len(self._peer_latency_history[peer_id]) > self._latency_history_size:
+                    self._peer_latency_history[peer_id] = self._peer_latency_history[peer_id][-self._latency_history_size:]
+
             return latencies
 
         except Exception as e:
             logger.debug(f"Ping to {peer_id} failed: {e}")
             return None
+
+    def get_peer_latency(self, peer_id: str) -> Optional[float]:
+        """Get the latest latency measurement for a peer in milliseconds."""
+        return self._peer_latencies.get(peer_id)
+
+    def get_peer_avg_latency(self, peer_id: str) -> Optional[float]:
+        """Get the average latency for a peer from recent history."""
+        history = self._peer_latency_history.get(peer_id, [])
+        if history:
+            return sum(history) / len(history)
+        return None
+
+    def get_all_peer_latencies(self) -> Dict[str, float]:
+        """Get all stored peer latencies."""
+        return dict(self._peer_latencies)
+
+    def get_network_avg_latency(self) -> Optional[float]:
+        """Get average latency across all peers with measurements."""
+        if not self._peer_latencies:
+            return None
+        return sum(self._peer_latencies.values()) / len(self._peer_latencies)
 
     def get_known_peer_identities(self) -> Dict[str, Any]:
         """

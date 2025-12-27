@@ -18,7 +18,7 @@ import logging
 import time
 import random
 import hashlib
-from typing import Dict, List, Optional, Set, Callable, TYPE_CHECKING, Union
+from typing import Any, Dict, List, Optional, Set, Callable, TYPE_CHECKING, Union
 from dataclasses import dataclass, field, asdict
 from collections import defaultdict
 
@@ -373,24 +373,53 @@ class UptimeTracker:
         if self.peers:
             self._setup_pubsub()
 
-    def _setup_pubsub(self) -> None:
-        """Subscribe to heartbeat PubSub topic."""
+    async def _setup_pubsub_async(self) -> None:
+        """Subscribe to heartbeat PubSub topic (async version)."""
         if not self.peers:
             return
 
         try:
+            # Use subscribe_async to properly subscribe at GossipSub level
+            # The peers.broadcast() adds STREAM_TOPIC_PREFIX, so we use same topic name
+            await self.peers.subscribe_async(
+                HEARTBEAT_TOPIC,
+                self._handle_heartbeat_message
+            )
+            logger.info(f"Subscribed to heartbeat topic: {HEARTBEAT_TOPIC}")
+        except Exception as e:
+            logger.error(f"Failed to setup heartbeat PubSub: {e}")
+
+    def _setup_pubsub(self) -> None:
+        """Subscribe to heartbeat PubSub topic (sync fallback - limited)."""
+        if not self.peers:
+            return
+
+        try:
+            # Local callback only - for backwards compatibility
+            # Full GossipSub subscription happens in _setup_pubsub_async
             self.peers.subscribe(
                 HEARTBEAT_TOPIC,
                 self._handle_heartbeat_message
             )
-            logger.info(f"Subscribed to {HEARTBEAT_TOPIC}")
+            logger.info(f"Registered local heartbeat callback for {HEARTBEAT_TOPIC}")
         except Exception as e:
-            logger.error(f"Failed to setup heartbeat PubSub: {e}")
+            logger.error(f"Failed to setup heartbeat callback: {e}")
 
-    def _handle_heartbeat_message(self, message: dict) -> None:
+    def _handle_heartbeat_message(self, stream_id: str, data: Any) -> None:
         """Handle incoming heartbeat from PubSub."""
         try:
+            import json
+            # Data may be bytes (raw) or already deserialized dict
+            if isinstance(data, bytes):
+                message = json.loads(data.decode())
+            elif isinstance(data, dict):
+                message = data
+            else:
+                logger.warning(f"Unexpected heartbeat data type: {type(data)}")
+                return
+
             heartbeat = Heartbeat.from_dict(message)
+            logger.debug(f"Received heartbeat from {heartbeat.node_id}: {heartbeat.status_message}")
             self.receive_heartbeat(heartbeat)
         except Exception as e:
             logger.error(f"Failed to handle heartbeat message: {e}")
@@ -416,6 +445,9 @@ class UptimeTracker:
             return True
 
         self._is_heartbeating = True
+
+        # Setup proper GossipSub subscription for receiving heartbeats
+        await self._setup_pubsub_async()
 
         # Auto-start a round if not already in one
         if not self._current_round:
@@ -798,6 +830,15 @@ class UptimeTracker:
         expected = max(1, elapsed // HEARTBEAT_INTERVAL)
 
         return min(1.0, len(timestamps) / expected)
+
+    def get_uptime_percentage(self) -> float:
+        """
+        Get our own uptime percentage for the current round.
+
+        Returns:
+            Uptime percentage (0.0 - 1.0)
+        """
+        return self.get_node_uptime(self.node_id)
 
     def is_relay_qualified(self, node_id: str, round_id: Optional[str] = None) -> bool:
         """

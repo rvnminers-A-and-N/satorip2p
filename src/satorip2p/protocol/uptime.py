@@ -57,38 +57,68 @@ HEARTBEAT_PROTOCOL_VERSION = "1.0.0"
 # NOTE: Bootstrap peers are configured in satorip2p/config.py (BOOTSTRAP_PEERS)
 # All PubSub topics (including heartbeat) use the same P2P mesh network.
 
-# Fun status messages - because why not have personality?
+# Fun status messages - 60 total so each shows ~24 times/day (once per hour)
 HEARTBEAT_STATUS_MESSAGES = [
-    "vibing in the mesh...",
-    "beep boop, still here!",
-    "crunching predictions...",
-    "riding the data waves...",
-    "quantum entangled and ready!",
-    "caffeinated and operational...",
-    "syncing with the cosmos...",
-    "neurons firing on all cylinders!",
-    "decentralizing the future...",
-    "proof of consciousness achieved!",
-    "streaming consciousness...",
-    "in the zone, making predictions...",
-    "satori-fying the network...",
-    "zen and the art of uptime...",
-    "enlightenment in progress...",
-    "one with the blockchain...",
-    "predicting the unpredictable...",
-    "distributed and feeling good!",
-    "mesh-merizing the competition...",
-    "staking my claim to existence!",
-    "heartbeat goes brrr...",
-    "living my best node life...",
-    "relay-xing and prospering...",
-    "oracle-ing around the clock...",
-    "consensus is my middle name...",
-    "born to predict, forced to wait...",
-    "making satoshi proud...",
-    "trustlessly trusting the process...",
-    "peer-to-peer and loving it!",
-    "immutably here for you...",
+    "Vibing in the mesh...",
+    "Beep boop, still here!",
+    "Crunching predictions...",
+    "Riding the data waves...",
+    "Quantum entangled and ready!",
+    "Caffeinated and operational...",
+    "Syncing with the cosmos...",
+    "Neurons firing on all cylinders!",
+    "Decentralizing the future...",
+    "Proof of consciousness achieved!",
+    "Streaming consciousness...",
+    "In the zone, making predictions...",
+    "Satori-fying the network...",
+    "Zen and the art of uptime...",
+    "Enlightenment in progress...",
+    "One with the blockchain...",
+    "Predicting the unpredictable...",
+    "Distributed and feeling good!",
+    "Mesh-merizing the competition...",
+    "Staking my claim to existence!",
+    "Heartbeat goes brrr...",
+    "Living my best node life...",
+    "Relay-xing and prospering...",
+    "Oracle-ing around the clock...",
+    "Consensus is my middle name...",
+    "Born to predict, forced to wait...",
+    "Making satoshi proud...",
+    "Trustlessly trusting the process...",
+    "Peer-to-peer and loving it!",
+    "Immutably here for you...",
+    "Forecasting the future...",
+    "Reading the data tea leaves...",
+    "Crystal ball calibrated...",
+    "Probability waves collapsing...",
+    "I predict... I'll still be here!",
+    "Prophesying with precision...",
+    "Future looks distributed...",
+    "Accuracy loading...",
+    "Gossiping with the mesh...",
+    "Relaying good vibes...",
+    "DHT diving for peers...",
+    "Propagating through the network...",
+    "Packets flowing smoothly...",
+    "NAT punched, feeling good...",
+    "Bootstrap complete, thriving...",
+    "Connected and protected...",
+    "Stacking sats of wisdom...",
+    "Hash rate: maximum chill...",
+    "Block by block, we rise...",
+    "Consensus achieved: still awesome...",
+    "Signed, sealed, delivered...",
+    "Immutable and unstoppable...",
+    "Decentralized and loving it...",
+    "Trustless but trusting...",
+    "Have you tried turning it off and on again?",
+    "404: Downtime not found...",
+    "Running on coffee and algorithms...",
+    "To predict, or not to predict...",
+    "All systems nominal...",
+    "Uptime is my superpower...",
 ]
 
 
@@ -335,6 +365,10 @@ class UptimeTracker:
         self._last_heartbeat: int = 0
         self._last_status_message: str = ""  # Track most recent heartbeat message
 
+        # Heartbeat counters for UI
+        self._heartbeats_sent: int = 0
+        self._heartbeats_received: int = 0
+
         # Subscribe to heartbeat topic if peers available
         if self.peers:
             self._setup_pubsub()
@@ -504,6 +538,7 @@ class UptimeTracker:
 
         self._last_heartbeat = now
         self._last_status_message = heartbeat.status_message  # Store for UI display
+        self._heartbeats_sent += 1
         return heartbeat
 
     def send_heartbeat(self, roles: Optional[List[str]] = None) -> Optional[Heartbeat]:
@@ -562,6 +597,7 @@ class UptimeTracker:
 
         self._last_heartbeat = now
         self._last_status_message = heartbeat.status_message  # Store for UI display
+        self._heartbeats_sent += 1
         return heartbeat
 
     def _sign_heartbeat(self, heartbeat: Heartbeat) -> bytes:
@@ -656,6 +692,10 @@ class UptimeTracker:
         # Store node roles
         for role in heartbeat.roles:
             self._node_roles[heartbeat.node_id].add(role)
+
+        # Increment received counter (for heartbeats from others)
+        if heartbeat.node_id != self.node_id:
+            self._heartbeats_received += 1
 
         logger.debug(f"Received heartbeat from {heartbeat.node_id}")
         return True

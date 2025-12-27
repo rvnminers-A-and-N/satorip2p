@@ -459,6 +459,10 @@ class Peers:
             # will eventually advertise their subscriptions
             nursery.start_soon(self._subscription_readvertisement_task)
 
+            # Start mesh repair task to fix py-libp2p GossipSub bug
+            # where topics can end up with empty mesh due to race conditions
+            nursery.start_soon(self._mesh_repair_task)
+
             # Retrieve pending messages
             nursery.start_soon(self._retrieve_pending_messages)
 
@@ -742,6 +746,65 @@ class Peers:
                 logger.debug(f"Subscription re-advertisement task error: {e}")
 
             # Re-advertise every 60 seconds
+            await trio.sleep(60)
+
+    async def _mesh_repair_task(self) -> None:
+        """
+        Background task to repair broken GossipSub meshes.
+
+        This fixes a py-libp2p bug where topics can end up with empty or
+        undersized mesh despite having peers available in peer_topics.
+        This can happen due to race conditions during subscription when
+        peers subscribe before others are available.
+
+        The task checks all topic meshes and grafts peers when mesh size
+        falls below D_low (minimum mesh size). It repairs up to D (target
+        mesh size) peers.
+
+        Runs every 60 seconds after an initial 45-second delay.
+        """
+        # Wait for initial mesh formation
+        await trio.sleep(45)
+
+        while True:
+            try:
+                if self._pubsub and hasattr(self._pubsub, 'router'):
+                    router = self._pubsub.router
+                    repairs_made = 0
+
+                    for topic in list(router.mesh.keys()):
+                        mesh_peers = router.mesh.get(topic, set())
+                        mesh_size = len(mesh_peers)
+                        peer_topics = self._pubsub.peer_topics.get(topic, set())
+
+                        # Only repair if mesh is below D_low and we have peers to add
+                        if mesh_size < router.degree_low and len(peer_topics) > mesh_size:
+                            # Find peers in peer_topics but not in mesh
+                            missing = peer_topics - mesh_peers
+                            # Add up to D peers total
+                            to_add = min(router.degree - mesh_size, len(missing))
+
+                            if to_add > 0:
+                                added = 0
+                                for peer in list(missing)[:to_add]:
+                                    try:
+                                        router.mesh[topic].add(peer)
+                                        await router.emit_graft(topic, peer)
+                                        added += 1
+                                    except Exception as e:
+                                        logger.debug(f"Failed to graft peer {peer} to {topic}: {e}")
+
+                                if added > 0:
+                                    logger.info(f"Mesh repair: added {added} peer(s) to {topic} (was {mesh_size}, now {mesh_size + added})")
+                                    repairs_made += added
+
+                    if repairs_made > 0:
+                        logger.info(f"Mesh repair complete: {repairs_made} total peer(s) added across topics")
+
+            except Exception as e:
+                logger.debug(f"Mesh repair task error: {e}")
+
+            # Check every 60 seconds
             await trio.sleep(60)
 
     # ========== Properties ==========

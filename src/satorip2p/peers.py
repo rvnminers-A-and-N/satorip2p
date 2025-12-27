@@ -454,6 +454,11 @@ class Peers:
             # Start periodic latency measurement task
             nursery.start_soon(self._latency_measurement_task)
 
+            # Start periodic subscription re-advertisement task
+            # This ensures nodes that start before peers are available
+            # will eventually advertise their subscriptions
+            nursery.start_soon(self._subscription_readvertisement_task)
+
             # Retrieve pending messages
             nursery.start_soon(self._retrieve_pending_messages)
 
@@ -696,6 +701,48 @@ class Peers:
 
             # Measure every 30 seconds
             await trio.sleep(30)
+
+    async def _subscription_readvertisement_task(self) -> None:
+        """
+        Background task to periodically re-advertise topic subscriptions.
+
+        This ensures nodes that started before peers were available will
+        eventually advertise their subscriptions once peers connect.
+        Without this, the first node to start would not be discoverable
+        for topics it subscribed to before any peers were available.
+
+        Runs every 60 seconds after an initial 30-second delay.
+        """
+        # Wait for initial startup and peer connections
+        await trio.sleep(30)
+
+        while True:
+            try:
+                connected_count = len(self.get_connected_peers())
+                subscriptions = list(self._my_subscriptions)
+
+                if connected_count > 0 and subscriptions and self._subscriptions and self.peer_id:
+                    logger.info(f"Re-advertising {len(subscriptions)} subscription(s) to {connected_count} connected peer(s)")
+
+                    for stream_id in subscriptions:
+                        try:
+                            await self._subscriptions.announce_subscription(
+                                self.peer_id,
+                                stream_id,
+                                self.evrmore_address
+                            )
+                        except Exception as e:
+                            logger.debug(f"Failed to re-advertise subscription {stream_id}: {e}")
+
+                    logger.debug("Subscription re-advertisement complete")
+                elif subscriptions and connected_count == 0:
+                    logger.debug(f"Skipping re-advertisement: no connected peers (have {len(subscriptions)} subscription(s))")
+
+            except Exception as e:
+                logger.debug(f"Subscription re-advertisement task error: {e}")
+
+            # Re-advertise every 60 seconds
+            await trio.sleep(60)
 
     # ========== Properties ==========
 

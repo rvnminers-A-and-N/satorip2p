@@ -123,9 +123,13 @@ class SubscriptionManager:
                 # Ensure stream_id is a string - libp2p DHT expects string keys
                 stream_id_str = stream_id if isinstance(stream_id, str) else str(stream_id)
                 key = f"{self.SUB_KEY_PREFIX}{stream_id_str}"
-                await self.dht.provide(key)
-                logger.debug(f"Announced subscription: peer_id={peer_id} -> stream_id={stream_id_str}")
-                return True
+                logger.info(f"Advertising subscription to DHT: stream_id={stream_id_str}")
+                success = await self.dht.provide(key)
+                if success:
+                    logger.info(f"Subscription advertised successfully: stream_id={stream_id_str}")
+                else:
+                    logger.warning(f"Subscription advertisement returned false: stream_id={stream_id_str}")
+                return success
             except Exception as e:
                 logger.warning(f"Failed to announce subscription to DHT: {e}")
                 return False

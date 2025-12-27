@@ -208,6 +208,103 @@ class IdentifyProtocol:
         except Exception as e:
             logger.debug(f"Failed to request identity: {e}")
 
+    async def announce_to_peer(self, peer_id: str) -> bool:
+        """
+        Send our identity directly to a specific peer.
+
+        Args:
+            peer_id: Target peer's libp2p peer ID
+
+        Returns:
+            True if sent successfully, False otherwise
+        """
+        if not self._started:
+            return False
+
+        identity = self._build_identity()
+        if not identity:
+            return False
+
+        try:
+            message = {
+                "type": "identify_announce",
+                "identity": identity.to_dict(),
+            }
+            success = await self._peers._send_direct(peer_id, message)
+            if success:
+                logger.debug(f"Sent identity to peer: {peer_id}")
+            return success
+        except Exception as e:
+            logger.warning(f"Failed to send identity to {peer_id}: {e}")
+            return False
+
+    async def announce_to_known_peers(self) -> int:
+        """
+        Send our identity to all known peers.
+
+        Returns:
+            Number of peers successfully sent to
+        """
+        if not self._started:
+            return 0
+
+        success_count = 0
+        for peer_id in list(self._known_peers.keys()):
+            if await self.announce_to_peer(peer_id):
+                success_count += 1
+
+        logger.info(f"Announced identity to {success_count}/{len(self._known_peers)} known peers")
+        return success_count
+
+    async def request_identity_from_peer(self, peer_id: str) -> bool:
+        """
+        Request identity directly from a specific peer.
+
+        Args:
+            peer_id: Target peer's libp2p peer ID
+
+        Returns:
+            True if request sent successfully, False otherwise
+        """
+        if not self._started:
+            return False
+
+        my_peer_id = self._peers.peer_id
+        if not my_peer_id:
+            return False
+
+        try:
+            message = {
+                "type": "identify_request",
+                "requester_id": my_peer_id,
+                "target_id": peer_id,
+            }
+            success = await self._peers._send_direct(peer_id, message)
+            if success:
+                logger.debug(f"Sent identity request to peer: {peer_id}")
+            return success
+        except Exception as e:
+            logger.warning(f"Failed to request identity from {peer_id}: {e}")
+            return False
+
+    async def request_identity_from_known_peers(self) -> int:
+        """
+        Request identity from all known peers.
+
+        Returns:
+            Number of peers successfully requested from
+        """
+        if not self._started:
+            return 0
+
+        success_count = 0
+        for peer_id in list(self._known_peers.keys()):
+            if await self.request_identity_from_peer(peer_id):
+                success_count += 1
+
+        logger.info(f"Requested identity from {success_count}/{len(self._known_peers)} known peers")
+        return success_count
+
     def get_known_peers(self) -> Dict[str, PeerIdentity]:
         """Get all known peer identities."""
         return dict(self._known_peers)

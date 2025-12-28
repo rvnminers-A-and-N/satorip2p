@@ -50,9 +50,14 @@ RELAY_UPTIME_THRESHOLD = 0.95    # 95% uptime required for relay bonus
 
 # PubSub topics
 HEARTBEAT_TOPIC = "satori/heartbeat"
+ROUND_SYNC_TOPIC = "satori/round-sync"
 
 # Protocol version for compatibility
 HEARTBEAT_PROTOCOL_VERSION = "1.0.0"
+
+# Round settings - aligned with Satori Network prediction rounds
+ROUND_DURATION = 86400  # 24 hours in seconds
+ROUND_SYNC_INTERVAL = 60  # Broadcast round info every 60 seconds (matches heartbeat)
 
 # NOTE: Bootstrap peers are configured in satorip2p/config.py (BOOTSTRAP_PEERS)
 # All PubSub topics (including heartbeat) use the same P2P mesh network.
@@ -120,6 +125,33 @@ HEARTBEAT_STATUS_MESSAGES = [
     "All systems nominal...",
     "Uptime is my superpower...",
 ]
+
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def get_current_round() -> tuple:
+    """
+    Get the current round ID and start time based on UTC midnight.
+
+    Rounds align with Satori Network prediction rounds:
+    - Start at 00:00 UTC daily
+    - Last 24 hours
+    - Round ID format: "round_YYYY-MM-DD"
+
+    Returns:
+        Tuple of (round_id, round_start_timestamp)
+    """
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    # Get today's midnight UTC
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    round_start = int(midnight.timestamp())
+    round_id = f"round_{midnight.strftime('%Y-%m-%d')}"
+
+    return round_id, round_start
 
 
 # ============================================================================
@@ -369,25 +401,35 @@ class UptimeTracker:
         self._heartbeats_sent: int = 0
         self._heartbeats_received: int = 0
 
+        # Round sync state
+        self._known_rounds: Dict[str, int] = {}  # round_id -> start_time
+        self._last_round_sync: int = 0
+
         # Subscribe to heartbeat topic if peers available
         if self.peers:
             self._setup_pubsub()
 
     async def _setup_pubsub_async(self) -> None:
-        """Subscribe to heartbeat PubSub topic (async version)."""
+        """Subscribe to heartbeat and round sync PubSub topics (async version)."""
         if not self.peers:
             return
 
         try:
-            # Use subscribe_async to properly subscribe at GossipSub level
-            # The peers.broadcast() adds STREAM_TOPIC_PREFIX, so we use same topic name
+            # Subscribe to heartbeat topic
             await self.peers.subscribe_async(
                 HEARTBEAT_TOPIC,
                 self._handle_heartbeat_message
             )
             logger.info(f"Subscribed to heartbeat topic: {HEARTBEAT_TOPIC}")
+
+            # Subscribe to round sync topic
+            await self.peers.subscribe_async(
+                ROUND_SYNC_TOPIC,
+                self._handle_round_sync_message
+            )
+            logger.info(f"Subscribed to round sync topic: {ROUND_SYNC_TOPIC}")
         except Exception as e:
-            logger.error(f"Failed to setup heartbeat PubSub: {e}")
+            logger.error(f"Failed to setup PubSub subscriptions: {e}")
 
     def _setup_pubsub(self) -> None:
         """Subscribe to heartbeat PubSub topic (sync fallback - limited)."""
@@ -424,6 +466,61 @@ class UptimeTracker:
         except Exception as e:
             logger.error(f"Failed to handle heartbeat message: {e}")
 
+    def _handle_round_sync_message(self, stream_id: str, data: Any) -> None:
+        """Handle incoming round sync message from PubSub."""
+        try:
+            import json
+            # Data may be bytes (raw) or already deserialized dict
+            if isinstance(data, bytes):
+                message = json.loads(data.decode())
+            elif isinstance(data, dict):
+                message = data
+            else:
+                logger.warning(f"Unexpected round sync data type: {type(data)}")
+                return
+
+            round_id = message.get('round_id')
+            round_start = message.get('round_start')
+            sender_node = message.get('node_id', 'unknown')
+
+            if not round_id or not round_start:
+                return
+
+            # Track known rounds (for debugging/monitoring)
+            self._known_rounds[round_id] = round_start
+
+            # All nodes should calculate the same round (UTC midnight aligned)
+            # If we receive a different round, it might be from a node with clock skew
+            # or from a different day. Just log it for now.
+            if round_id != self._current_round:
+                logger.debug(f"Received round sync for {round_id} from {sender_node} (we're on {self._current_round})")
+
+                # If we don't have a round yet, adopt theirs
+                if not self._current_round:
+                    logger.info(f"Adopting round {round_id} from {sender_node}")
+                    self.start_round(round_id, round_start)
+
+        except Exception as e:
+            logger.error(f"Failed to handle round sync message: {e}")
+
+    async def _broadcast_round_sync(self) -> None:
+        """Broadcast our current round to the network."""
+        if not self.peers or not self._current_round:
+            return
+
+        try:
+            message = {
+                'round_id': self._current_round,
+                'round_start': self._round_start,
+                'node_id': self.node_id,
+                'timestamp': int(time.time()),
+            }
+            await self.peers.broadcast(ROUND_SYNC_TOPIC, message)
+            self._last_round_sync = int(time.time())
+            logger.debug(f"Broadcast round sync: {self._current_round}")
+        except Exception as e:
+            logger.warning(f"Failed to broadcast round sync: {e}")
+
     # ========================================================================
     # PUBLIC API
     # ========================================================================
@@ -446,14 +543,17 @@ class UptimeTracker:
 
         self._is_heartbeating = True
 
-        # Setup proper GossipSub subscription for receiving heartbeats
+        # Setup proper GossipSub subscription for receiving heartbeats and round sync
         await self._setup_pubsub_async()
 
-        # Auto-start a round if not already in one
-        if not self._current_round:
-            import time
-            round_id = f"round_{int(time.time())}"
-            self.start_round(round_id, int(time.time()))
+        # Start the current round based on UTC midnight (aligns with Satori prediction rounds)
+        round_id, round_start = get_current_round()
+        if self._current_round != round_id:
+            self.start_round(round_id, round_start)
+            logger.info(f"Started round {round_id} (UTC midnight aligned)")
+
+        # Broadcast our round to help other nodes sync
+        await self._broadcast_round_sync()
 
         # Spawn heartbeat loop if nursery provided
         if nursery is not None:
@@ -482,6 +582,12 @@ class UptimeTracker:
                     logger.info(f"Sent heartbeat: node_id={heartbeat.node_id} status={heartbeat.status_message}")
                 else:
                     logger.debug("Heartbeat not sent (no active round)")
+
+                # Periodically broadcast round sync (every ROUND_SYNC_INTERVAL)
+                now = int(time.time())
+                if now - self._last_round_sync >= ROUND_SYNC_INTERVAL:
+                    await self._broadcast_round_sync()
+
             except Exception as e:
                 logger.warning(f"Failed to send heartbeat: {e}")
 

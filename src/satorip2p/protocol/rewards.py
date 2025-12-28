@@ -48,14 +48,82 @@ logger = logging.getLogger("satorip2p.protocol.rewards")
 
 
 # ============================================================================
+# NODE CATEGORIES
+# ============================================================================
+#
+# 1. FUNCTIONAL ROLES (what the node actively does on the network)
+#    - Affect node ball color gradient on network map
+#    - Earn role bonuses (cap +30%)
+#
+# | Role       | Bonus | Color   | Description                              |
+# |------------|-------|---------|------------------------------------------|
+# | predictor  | 0%    | #00ff88 | Makes predictions (default, all nodes)   |
+# | relay      | +5%   | #ff6b6b | High uptime message relay (≥95% uptime)  |
+# | oracle     | +10%  | #00aaff | Provides external observations           |
+# | signer     | +15%  | #ffd700 | Multi-sig signer (also curates & archives)|
+#
+# NOTE: Curating and archiving are JOBS that signers do, not separate roles.
+#       Signers earn their +15% bonus for performing all signer duties including
+#       data curation and historical archiving.
+#
+# 2. STAKING STATUS (economic relationship, not a functional role)
+#    - Shown as small icon badge on node (⬢ for operator, ↗ for delegate)
+#    - Participate in Pool Diversity bonus system
+#
+# | Status        | Icon | Color   | Description                           |
+# |---------------|------|---------|---------------------------------------|
+# | pool_operator | ⬢    | #aa44ff | Runs a prediction/staking pool        |
+# | delegate      | ↗    | #00d4aa | Delegates stake to a pool operator    |
+#
+# 3. EARNED TITLES (achievements for maxing multipliers)
+#    - Shown as outer ring gradient around node on network map
+#    - No additional bonus, just recognition/display
+#
+# | Title      | Color   | Earned By                                 |
+# |------------|---------|-------------------------------------------|
+# | historic   | #9966ff | 90+ day uptime streak (maxed streak)      |
+# | friendly   | #ff66aa | Diamond referral tier (2000+ referrals)   |
+# | charity    | #ffcc00 | Diamond donor tier (maxed donation)       |
+# | civic      | #00ddff | Diamond governance tier (maxed governance)|
+# | whale      | #00ff88 | Maxed stake bonus (+25%)                  |
+# | legend     | rainbow | All 5 titles earned (ultimate achievement)|
+
+# Functional roles that affect predictions and earn bonuses
+FUNCTIONAL_ROLES = [
+    "predictor",  # Default - all nodes are predictors (green)
+    "relay",      # High uptime relay node (red/coral)
+    "oracle",     # Observation provider (blue)
+    "signer",     # Multi-sig signer - also curates data & archives (gold)
+]
+
+# Staking status (economic relationship, not functional roles)
+STAKING_STATUSES = [
+    "pool_operator",  # Runs a staking/prediction pool
+    "delegate",       # Delegates stake to a pool
+]
+
+# Earned titles (achievements, displayed on network map)
+EARNED_TITLES = [
+    "historic",   # 90+ day uptime streak (purple)
+    "friendly",   # Diamond referral tier - 2000+ (pink)
+    "charity",    # Diamond donor tier (gold)
+    "civic",      # Diamond governance tier (cyan)
+    "whale",      # Maxed stake bonus (green)
+    "legend",     # All titles earned (rainbow)
+]
+
+# Legacy alias for backwards compatibility
+SUPPORTED_ROLES = FUNCTIONAL_ROLES + STAKING_STATUSES
+
+# ============================================================================
 # ROLE MULTIPLIER CONSTANTS
 # ============================================================================
 
 # Role bonus multipliers (added to base 1.0x)
 ROLE_BONUS_RELAY = 0.05     # +5% for relay nodes (≥95% uptime)
 ROLE_BONUS_ORACLE = 0.10    # +10% for oracles (observation used + matched)
-ROLE_BONUS_SIGNER = 0.10    # +10% for signers (signature included)
-ROLE_MULTIPLIER_CAP = 1.25  # Maximum multiplier (25% bonus cap)
+ROLE_BONUS_SIGNER = 0.15    # +15% for signers (includes curation & archiving duties)
+ROLE_MULTIPLIER_CAP = 1.30  # Maximum multiplier (30% bonus cap)
 
 # Relay uptime threshold
 RELAY_UPTIME_THRESHOLD = 0.95  # 95% uptime required for bonus
@@ -69,19 +137,22 @@ RELAY_UPTIME_THRESHOLD = 0.95  # 95% uptime required for bonus
 #
 # Formula: reward = score × total_multiplier / total_weighted
 #
-# Where total_multiplier = 1.0 + stake_bonus + role_bonus + referral_bonus
+# | Stake    | Bonus |
+# |----------|-------|
+# | 50       | 0%    |
+# | 51       | +5%   |
+# | 52       | +10%  |
+# | 53       | +15%  |
+# | 54       | +20%  |
+# | 55+      | +25%  |
 #
-# This ensures:
-# - Predictions are the PRIMARY factor (someone with 500 SATORI and bad
-#   predictions earns less than someone with 50 SATORI and great predictions)
-# - Having more stake provides a SMALL bonus, not proportional scaling
-# - Pools can't dominate just by accumulating stake
-# - Referrals provide another avenue for bonus multipliers
+# This rewards staking slightly above minimum without incentivizing
+# consolidation. Running multiple nodes at 55 SATORI each is always
+# better than stacking more on one node.
 
 MIN_STAKE = 50                      # Minimum stake to participate
-STAKE_BONUS_INTERVAL = 50           # Bonus per this many SATORI above minimum
-STAKE_BONUS_PER_INTERVAL = 0.05     # +5% per interval
-STAKE_BONUS_CAP = 0.25              # Maximum +25% stake bonus
+STAKE_BONUS_PER_SATORI = 0.05       # +5% per SATORI above minimum
+STAKE_BONUS_CAP = 0.25              # Maximum +25% stake bonus (reached at 55 SATORI)
 
 
 # ============================================================================
@@ -141,6 +212,119 @@ POOL_DIVERSITY_BONUS_LARGE = 0.02     # +2% for large pools
 POOL_DIVERSITY_BONUS_CAP = 0.10       # Maximum +10% pool diversity bonus
 
 
+# ============================================================================
+# UPTIME STREAK BONUS CONSTANTS
+# ============================================================================
+#
+# Nodes that maintain consistent uptime (≥95%) over consecutive days earn
+# streak bonuses. This rewards long-term reliable participation.
+#
+# | Streak Days | Bonus |
+# |-------------|-------|
+# | 7           | +2%   |
+# | 14          | +4%   |
+# | 30          | +6%   |
+# | 60          | +8%   |
+# | 90+         | +10%  |
+#
+# The streak resets if uptime drops below 95% for a full round (24 hours).
+
+UPTIME_STREAK_TIER_1 = 7       # 1 week
+UPTIME_STREAK_TIER_2 = 14      # 2 weeks
+UPTIME_STREAK_TIER_3 = 30      # 1 month
+UPTIME_STREAK_TIER_4 = 60      # 2 months
+UPTIME_STREAK_TIER_5 = 90      # 3 months
+
+UPTIME_STREAK_BONUS_TIER_1 = 0.02   # +2%
+UPTIME_STREAK_BONUS_TIER_2 = 0.04   # +4%
+UPTIME_STREAK_BONUS_TIER_3 = 0.06   # +6%
+UPTIME_STREAK_BONUS_TIER_4 = 0.08   # +8%
+UPTIME_STREAK_BONUS_TIER_5 = 0.10   # +10%
+UPTIME_STREAK_BONUS_CAP = 0.10      # Maximum +10% uptime streak bonus
+
+UPTIME_STREAK_THRESHOLD = 0.95      # 95% uptime required to maintain streak
+
+
+# ============================================================================
+# GOVERNANCE PARTICIPATION BONUS CONSTANTS
+# ============================================================================
+#
+# Nodes that actively participate in governance earn bonus multipliers.
+# This incentivizes community engagement and decentralized decision-making.
+#
+# Factors considered:
+# - Voting participation (% of proposals voted on)
+# - Proposal creation (successful proposals)
+# - Discussion participation (comments on proposals)
+# - Voting streak (consecutive rounds with voting activity)
+#
+# | Tier     | Requirements                              | Bonus |
+# |----------|-------------------------------------------|-------|
+# | Bronze   | 25% vote rate OR 1 proposal OR 5 comments | +2%   |
+# | Silver   | 50% vote rate OR 3 proposals OR 15 cmts   | +5%   |
+# | Gold     | 75% vote rate OR 5 proposals OR 30 cmts   | +8%   |
+# | Platinum | 90% vote rate AND 3+ proposals            | +12%  |
+# | Diamond  | 95% vote rate AND 5+ proposals AND 50 cmts| +15%  |
+#
+# Reaching Diamond tier earns the "civic" title.
+
+GOVERNANCE_TIER_BRONZE_VOTE_RATE = 0.25     # 25% of proposals voted
+GOVERNANCE_TIER_SILVER_VOTE_RATE = 0.50     # 50%
+GOVERNANCE_TIER_GOLD_VOTE_RATE = 0.75       # 75%
+GOVERNANCE_TIER_PLATINUM_VOTE_RATE = 0.90   # 90%
+GOVERNANCE_TIER_DIAMOND_VOTE_RATE = 0.95    # 95%
+
+GOVERNANCE_TIER_BRONZE_PROPOSALS = 1        # Created 1 proposal
+GOVERNANCE_TIER_SILVER_PROPOSALS = 3        # Created 3 proposals
+GOVERNANCE_TIER_GOLD_PROPOSALS = 5          # Created 5 proposals
+GOVERNANCE_TIER_PLATINUM_PROPOSALS = 3      # Platinum requires 3+ proposals AND high vote rate
+GOVERNANCE_TIER_DIAMOND_PROPOSALS = 5       # Diamond requires 5+ proposals
+
+GOVERNANCE_TIER_BRONZE_COMMENTS = 5         # 5 comments
+GOVERNANCE_TIER_SILVER_COMMENTS = 15        # 15 comments
+GOVERNANCE_TIER_GOLD_COMMENTS = 30          # 30 comments
+GOVERNANCE_TIER_DIAMOND_COMMENTS = 50       # Diamond requires 50+ comments
+
+GOVERNANCE_BONUS_BRONZE = 0.02      # +2%
+GOVERNANCE_BONUS_SILVER = 0.05      # +5%
+GOVERNANCE_BONUS_GOLD = 0.08        # +8%
+GOVERNANCE_BONUS_PLATINUM = 0.12    # +12%
+GOVERNANCE_BONUS_DIAMOND = 0.15     # +15%
+GOVERNANCE_BONUS_CAP = 0.15         # Maximum +15% governance bonus
+
+
+# ============================================================================
+# DONATION BONUS CONSTANTS
+# ============================================================================
+#
+# Nodes that donate EVR to the treasury earn bonus multipliers.
+# This keeps EVR flowing through the system to fund operations.
+# Tiers are based on total EVR donated:
+#
+# | Tier     | Total Donated   | Bonus | ~USD Value |
+# |----------|-----------------|-------|------------|
+# | Bronze   | 100,000 EVR     | +4%   | ~$9        |
+# | Silver   | 250,000 EVR     | +8%   | ~$22       |
+# | Gold     | 500,000 EVR     | +12%  | ~$44       |
+# | Platinum | 1,000,000 EVR   | +16%  | ~$89       |
+# | Diamond  | 5,000,000 EVR   | +20%  | ~$444      |
+#
+# Reaching Diamond tier earns the "charity" title.
+
+DONATION_TIER_BRONZE = 100000       # 100,000 EVR (~$9)
+DONATION_TIER_SILVER = 250000       # 250,000 EVR (~$22)
+DONATION_TIER_GOLD = 500000         # 500,000 EVR (~$44)
+DONATION_TIER_PLATINUM = 1000000    # 1,000,000 EVR (~$89)
+DONATION_TIER_DIAMOND = 5000000     # 5,000,000 EVR (~$444)
+
+DONATION_BONUS_BRONZE = 0.04      # +4%
+DONATION_BONUS_SILVER = 0.08      # +8%
+DONATION_BONUS_GOLD = 0.12        # +12%
+DONATION_BONUS_PLATINUM = 0.16    # +16%
+DONATION_BONUS_DIAMOND = 0.20     # +20%
+DONATION_BONUS_CAP = 0.20         # Maximum +20% donation bonus
+
+
 def calculate_pool_diversity_bonus(pool_total_stake: float) -> float:
     """
     Calculate pool diversity bonus based on total pool stake.
@@ -194,6 +378,231 @@ def get_pool_diversity_tier(pool_total_stake: float) -> Optional[str]:
         return 'large'
     else:
         return None
+
+
+def calculate_uptime_streak_bonus(streak_days: int) -> float:
+    """
+    Calculate uptime streak bonus based on consecutive days of ≥95% uptime.
+
+    Rewards nodes that maintain consistent reliability over time.
+    Streak resets if uptime drops below 95% for a full round (24 hours).
+
+    Examples:
+        0-6 days   -> 0% bonus
+        7 days     -> +2% bonus (1 week)
+        14 days    -> +4% bonus (2 weeks)
+        30 days    -> +6% bonus (1 month)
+        60 days    -> +8% bonus (2 months)
+        90+ days   -> +10% bonus (3 months+)
+
+    Args:
+        streak_days: Number of consecutive days with ≥95% uptime
+
+    Returns:
+        Bonus multiplier (0.0 to 0.10)
+    """
+    if streak_days >= UPTIME_STREAK_TIER_5:
+        return UPTIME_STREAK_BONUS_TIER_5
+    elif streak_days >= UPTIME_STREAK_TIER_4:
+        return UPTIME_STREAK_BONUS_TIER_4
+    elif streak_days >= UPTIME_STREAK_TIER_3:
+        return UPTIME_STREAK_BONUS_TIER_3
+    elif streak_days >= UPTIME_STREAK_TIER_2:
+        return UPTIME_STREAK_BONUS_TIER_2
+    elif streak_days >= UPTIME_STREAK_TIER_1:
+        return UPTIME_STREAK_BONUS_TIER_1
+    else:
+        return 0.0
+
+
+def get_uptime_streak_tier(streak_days: int) -> Optional[str]:
+    """
+    Get the tier name for a given uptime streak.
+
+    Args:
+        streak_days: Number of consecutive days with ≥95% uptime
+
+    Returns:
+        Tier name or None if not enough days
+    """
+    if streak_days >= UPTIME_STREAK_TIER_5:
+        return 'legendary'  # 90+ days
+    elif streak_days >= UPTIME_STREAK_TIER_4:
+        return 'veteran'    # 60+ days
+    elif streak_days >= UPTIME_STREAK_TIER_3:
+        return 'dedicated'  # 30+ days
+    elif streak_days >= UPTIME_STREAK_TIER_2:
+        return 'committed'  # 14+ days
+    elif streak_days >= UPTIME_STREAK_TIER_1:
+        return 'steady'     # 7+ days
+    else:
+        return None
+
+
+def calculate_donation_bonus(total_donated_evr: float) -> float:
+    """
+    Calculate donation bonus based on total EVR donated to treasury.
+
+    Rewards nodes that contribute to network operations through donations.
+    Higher donation tiers unlock better bonuses.
+
+    Examples:
+        0 EVR         -> 0% bonus
+        1,000 EVR     -> +4% bonus (Bronze)
+        5,000 EVR     -> +8% bonus (Silver)
+        25,000 EVR    -> +12% bonus (Gold)
+        100,000 EVR   -> +16% bonus (Platinum)
+        500,000+ EVR  -> +20% bonus (Diamond)
+
+    Args:
+        total_donated_evr: Total EVR donated to treasury
+
+    Returns:
+        Bonus multiplier (0.0 to 0.20)
+    """
+    if total_donated_evr >= DONATION_TIER_DIAMOND:
+        return DONATION_BONUS_DIAMOND
+    elif total_donated_evr >= DONATION_TIER_PLATINUM:
+        return DONATION_BONUS_PLATINUM
+    elif total_donated_evr >= DONATION_TIER_GOLD:
+        return DONATION_BONUS_GOLD
+    elif total_donated_evr >= DONATION_TIER_SILVER:
+        return DONATION_BONUS_SILVER
+    elif total_donated_evr >= DONATION_TIER_BRONZE:
+        return DONATION_BONUS_BRONZE
+    else:
+        return 0.0
+
+
+def get_donation_tier(total_donated_evr: float) -> Optional[str]:
+    """
+    Get the tier name for a given donation amount.
+
+    Args:
+        total_donated_evr: Total EVR donated to treasury
+
+    Returns:
+        Tier name or None if below Bronze
+    """
+    if total_donated_evr >= DONATION_TIER_DIAMOND:
+        return 'diamond'
+    elif total_donated_evr >= DONATION_TIER_PLATINUM:
+        return 'platinum'
+    elif total_donated_evr >= DONATION_TIER_GOLD:
+        return 'gold'
+    elif total_donated_evr >= DONATION_TIER_SILVER:
+        return 'silver'
+    elif total_donated_evr >= DONATION_TIER_BRONZE:
+        return 'bronze'
+    else:
+        return None
+
+
+def calculate_governance_bonus(
+    vote_rate: float,
+    proposals_created: int = 0,
+    comments_count: int = 0
+) -> float:
+    """
+    Calculate governance participation bonus based on voting, proposals, and comments.
+
+    Rewards active governance participants. Lower tiers can be reached via
+    ANY of: voting, proposals, or comments. Higher tiers require combinations.
+
+    Examples:
+        0% votes, 0 proposals, 0 comments -> 0% bonus
+        25% votes OR 1 proposal OR 5 comments -> +2% (Bronze)
+        50% votes OR 3 proposals OR 15 comments -> +5% (Silver)
+        75% votes OR 5 proposals OR 30 comments -> +8% (Gold)
+        90% votes AND 3+ proposals -> +12% (Platinum)
+        95% votes AND 5+ proposals AND 50+ comments -> +15% (Diamond)
+
+    Args:
+        vote_rate: Percentage of proposals voted on (0.0 to 1.0)
+        proposals_created: Number of proposals created
+        comments_count: Number of comments on proposals
+
+    Returns:
+        Bonus multiplier (0.0 to 0.15)
+    """
+    # Diamond tier: requires ALL three criteria
+    if (vote_rate >= GOVERNANCE_TIER_DIAMOND_VOTE_RATE and
+        proposals_created >= GOVERNANCE_TIER_DIAMOND_PROPOSALS and
+        comments_count >= GOVERNANCE_TIER_DIAMOND_COMMENTS):
+        return GOVERNANCE_BONUS_DIAMOND
+
+    # Platinum tier: requires high vote rate AND proposals
+    if (vote_rate >= GOVERNANCE_TIER_PLATINUM_VOTE_RATE and
+        proposals_created >= GOVERNANCE_TIER_PLATINUM_PROPOSALS):
+        return GOVERNANCE_BONUS_PLATINUM
+
+    # Gold tier: ANY of the three criteria
+    if (vote_rate >= GOVERNANCE_TIER_GOLD_VOTE_RATE or
+        proposals_created >= GOVERNANCE_TIER_GOLD_PROPOSALS or
+        comments_count >= GOVERNANCE_TIER_GOLD_COMMENTS):
+        return GOVERNANCE_BONUS_GOLD
+
+    # Silver tier: ANY of the three criteria
+    if (vote_rate >= GOVERNANCE_TIER_SILVER_VOTE_RATE or
+        proposals_created >= GOVERNANCE_TIER_SILVER_PROPOSALS or
+        comments_count >= GOVERNANCE_TIER_SILVER_COMMENTS):
+        return GOVERNANCE_BONUS_SILVER
+
+    # Bronze tier: ANY of the three criteria
+    if (vote_rate >= GOVERNANCE_TIER_BRONZE_VOTE_RATE or
+        proposals_created >= GOVERNANCE_TIER_BRONZE_PROPOSALS or
+        comments_count >= GOVERNANCE_TIER_BRONZE_COMMENTS):
+        return GOVERNANCE_BONUS_BRONZE
+
+    return 0.0
+
+
+def get_governance_tier(
+    vote_rate: float,
+    proposals_created: int = 0,
+    comments_count: int = 0
+) -> Optional[str]:
+    """
+    Get the tier name for a given governance participation level.
+
+    Args:
+        vote_rate: Percentage of proposals voted on (0.0 to 1.0)
+        proposals_created: Number of proposals created
+        comments_count: Number of comments on proposals
+
+    Returns:
+        Tier name or None if below Bronze
+    """
+    # Diamond tier
+    if (vote_rate >= GOVERNANCE_TIER_DIAMOND_VOTE_RATE and
+        proposals_created >= GOVERNANCE_TIER_DIAMOND_PROPOSALS and
+        comments_count >= GOVERNANCE_TIER_DIAMOND_COMMENTS):
+        return 'diamond'
+
+    # Platinum tier
+    if (vote_rate >= GOVERNANCE_TIER_PLATINUM_VOTE_RATE and
+        proposals_created >= GOVERNANCE_TIER_PLATINUM_PROPOSALS):
+        return 'platinum'
+
+    # Gold tier
+    if (vote_rate >= GOVERNANCE_TIER_GOLD_VOTE_RATE or
+        proposals_created >= GOVERNANCE_TIER_GOLD_PROPOSALS or
+        comments_count >= GOVERNANCE_TIER_GOLD_COMMENTS):
+        return 'gold'
+
+    # Silver tier
+    if (vote_rate >= GOVERNANCE_TIER_SILVER_VOTE_RATE or
+        proposals_created >= GOVERNANCE_TIER_SILVER_PROPOSALS or
+        comments_count >= GOVERNANCE_TIER_SILVER_COMMENTS):
+        return 'silver'
+
+    # Bronze tier
+    if (vote_rate >= GOVERNANCE_TIER_BRONZE_VOTE_RATE or
+        proposals_created >= GOVERNANCE_TIER_BRONZE_PROPOSALS or
+        comments_count >= GOVERNANCE_TIER_BRONZE_COMMENTS):
+        return 'bronze'
+
+    return None
 
 
 def calculate_referral_bonus(referral_count: int) -> float:
@@ -259,14 +668,19 @@ def calculate_stake_bonus(stake: float) -> float:
     """
     Calculate stake bonus for amounts above minimum.
 
-    Provides +5% bonus per 50 SATORI above the 50 SATORI minimum,
-    capped at +25% total.
+    Provides +5% bonus per SATORI above the 50 SATORI minimum,
+    capped at +25% total (reached at 55 SATORI).
+
+    This rewards staking slightly above minimum without incentivizing
+    consolidation over running multiple nodes.
 
     Examples:
         50 SATORI  -> 0% bonus (minimum)
-        100 SATORI -> +5% bonus (1 interval above)
-        200 SATORI -> +15% bonus (3 intervals above)
-        500 SATORI -> +25% bonus (capped)
+        51 SATORI  -> +5% bonus
+        52 SATORI  -> +10% bonus
+        53 SATORI  -> +15% bonus
+        54 SATORI  -> +20% bonus
+        55+ SATORI -> +25% bonus (capped)
 
     Args:
         stake: Amount of SATORI staked
@@ -278,8 +692,7 @@ def calculate_stake_bonus(stake: float) -> float:
         return 0.0
 
     excess = stake - MIN_STAKE
-    intervals = int(excess / STAKE_BONUS_INTERVAL)
-    bonus = intervals * STAKE_BONUS_PER_INTERVAL
+    bonus = excess * STAKE_BONUS_PER_SATORI
 
     return min(bonus, STAKE_BONUS_CAP)
 
@@ -288,69 +701,130 @@ def get_total_multiplier(
     stake: float,
     role_multiplier: float = 1.0,
     referral_count: int = 0,
-    pool_total_stake: float = 0.0
+    pool_total_stake: float = 0.0,
+    uptime_streak_days: int = 0,
+    total_donated_evr: float = 0.0,
+    governance_vote_rate: float = 0.0,
+    governance_proposals: int = 0,
+    governance_comments: int = 0
 ) -> float:
     """
     Calculate total reward multiplier combining all bonus sources.
 
-    The stake bonus, role bonus, referral bonus, and pool diversity bonus
-    are ADDITIVE to the base 1.0.
-    Total cap is 1.75 (base 1.0 + 0.25 stake + 0.25 role + 0.15 referral + 0.10 pool).
+    All bonuses are ADDITIVE to the base 1.0.
+    Total cap is 2.25x (base 1.0 + 125% maximum bonus).
 
     Bonus breakdown:
-    - Stake: +5% per 50 SATORI above minimum (50), capped at +25%
-    - Role: +5% relay, +10% oracle, +10% signer, capped at +25%
+    - Stake: +5% per SATORI above minimum (50), capped at +25% (55 SATORI)
+    - Role: +5% relay, +10% oracle, +15% signer, capped at +30%
     - Referral: +2% to +15% based on referral tier
-    - Pool Diversity: +2% to +10% for smaller pools (encourages decentralization)
+    - Pool Diversity: +2% to +10% for smaller pools
+    - Uptime Streak: +2% to +10% for consecutive days of ≥95% uptime
+    - Donation: +4% to +20% based on total EVR donated
+    - Governance: +2% to +15% based on voting, proposals, comments
 
     Args:
         stake: Amount of SATORI staked
-        role_multiplier: Role-based multiplier (1.0 to 1.25)
+        role_multiplier: Role-based multiplier (1.0 to 1.30)
         referral_count: Number of confirmed referrals
         pool_total_stake: Total stake in the pool (0 for solo predictors)
+        uptime_streak_days: Consecutive days with ≥95% uptime
+        total_donated_evr: Total EVR donated to treasury
+        governance_vote_rate: Percentage of proposals voted on (0.0 to 1.0)
+        governance_proposals: Number of proposals created
+        governance_comments: Number of comments on proposals
 
     Returns:
-        Total multiplier (1.0 to 1.75)
+        Total multiplier (1.0 to 2.25)
     """
     stake_bonus = calculate_stake_bonus(stake)
     role_bonus = role_multiplier - 1.0  # Extract bonus from multiplier
     referral_bonus = calculate_referral_bonus(referral_count)
     pool_diversity_bonus = calculate_pool_diversity_bonus(pool_total_stake)
+    uptime_streak_bonus = calculate_uptime_streak_bonus(uptime_streak_days)
+    donation_bonus = calculate_donation_bonus(total_donated_evr)
+    governance_bonus = calculate_governance_bonus(
+        governance_vote_rate, governance_proposals, governance_comments
+    )
 
     # Combine bonuses (all added to base 1.0)
-    total = 1.0 + stake_bonus + role_bonus + referral_bonus + pool_diversity_bonus
+    total = (1.0 + stake_bonus + role_bonus + referral_bonus +
+             pool_diversity_bonus + uptime_streak_bonus + donation_bonus +
+             governance_bonus)
 
-    # Cap at 1.75 (75% maximum bonus)
-    return min(total, 1.75)
+    # Cap at 2.25 (125% maximum bonus)
+    return min(total, 2.25)
 
 
 @dataclass
 class NodeRoles:
     """
-    Role qualification data for a node.
+    Role and status data for a node.
 
-    Used to calculate reward multipliers based on active roles.
+    Separates three categories:
+    1. Functional Roles: What the node actively does (predictor, relay, oracle, signer)
+       - Signers also perform curation and archiving as part of their duties
+    2. Staking Status: Economic relationship (pool_operator, delegate) - not a role
+    3. Earned Titles: Achievements for maxing multipliers (historic, friendly, charity, civic, whale, legend)
+
+    Used to calculate reward multipliers and display node visualization on network map.
     """
     node_id: str
-    is_predictor: bool = True  # Must be true to earn rewards
-    is_relay: bool = False
-    is_oracle: bool = False
-    is_signer: bool = False
 
-    # Qualification flags (did they actually perform the role this round?)
-    relay_qualified: bool = False   # Met 95% uptime
-    oracle_qualified: bool = False  # Observation used and matched consensus
-    signer_qualified: bool = False  # Signature included in distribution
+    # Functional roles (what the node actively does)
+    is_predictor: bool = True   # Must be true to earn rewards (default for all)
+    is_relay: bool = False      # High uptime message relay
+    is_oracle: bool = False     # Provides external observations
+    is_signer: bool = False     # Multi-sig signer (also curates data & archives)
 
-    # Supporting data
+    # Staking status (economic relationship, NOT a functional role)
+    # These don't earn role bonuses but participate in pool diversity system
+    staking_status: Optional[str] = None  # 'pool_operator', 'delegate', or None
+
+    # Qualification flags (did they actually perform the role THIS round?)
+    relay_qualified: bool = False     # Met 95% uptime
+    oracle_qualified: bool = False    # Observation used and matched consensus
+    signer_qualified: bool = False    # Signature included in distribution (includes curation/archiving)
+
+    # Supporting data for multipliers
     uptime_percentage: float = 0.0  # 0.0 to 1.0
+    uptime_streak_days: int = 0     # Consecutive days with ≥95% uptime
+    stake_amount: float = 0.0       # SATORI staked
+    referral_count: int = 0         # Number of referrals
+    total_donated_evr: float = 0.0  # Total EVR donated
+
+    # Governance participation data
+    governance_vote_rate: float = 0.0   # % of proposals voted (0.0 to 1.0)
+    governance_proposals: int = 0       # Number of proposals created
+    governance_comments: int = 0        # Number of comments on proposals
+
+    def get_functional_roles(self) -> List[str]:
+        """
+        Get list of active functional roles.
+
+        Returns:
+            List of role names (e.g., ['predictor', 'oracle', 'signer'])
+        """
+        roles = []
+        if self.is_predictor:
+            roles.append('predictor')
+        if self.is_relay:
+            roles.append('relay')
+        if self.is_oracle:
+            roles.append('oracle')
+        if self.is_signer:
+            roles.append('signer')
+        return roles
 
     def get_multiplier(self) -> float:
         """
         Calculate reward multiplier based on qualified roles.
 
+        Only functional roles that were actively performed this round
+        contribute to the multiplier.
+
         Returns:
-            Multiplier between 1.0 and 1.25
+            Multiplier between 1.0 and 1.30
         """
         multiplier = 1.0
 
@@ -364,6 +838,96 @@ class NodeRoles:
             multiplier += ROLE_BONUS_SIGNER
 
         return min(multiplier, ROLE_MULTIPLIER_CAP)
+
+    def get_uptime_streak_bonus(self) -> float:
+        """
+        Calculate uptime streak bonus based on consecutive days of ≥95% uptime.
+
+        Returns:
+            Bonus between 0.0 and 0.10
+        """
+        return calculate_uptime_streak_bonus(self.uptime_streak_days)
+
+    def get_uptime_streak_tier(self) -> Optional[str]:
+        """
+        Get the uptime streak tier name.
+
+        Returns:
+            Tier name or None if no streak
+        """
+        return get_uptime_streak_tier(self.uptime_streak_days)
+
+    def get_governance_bonus(self) -> float:
+        """
+        Calculate governance participation bonus.
+
+        Returns:
+            Bonus between 0.0 and 0.15
+        """
+        return calculate_governance_bonus(
+            self.governance_vote_rate,
+            self.governance_proposals,
+            self.governance_comments
+        )
+
+    def get_governance_tier(self) -> Optional[str]:
+        """
+        Get the governance participation tier name.
+
+        Returns:
+            Tier name or None if below Bronze
+        """
+        return get_governance_tier(
+            self.governance_vote_rate,
+            self.governance_proposals,
+            self.governance_comments
+        )
+
+    def get_earned_titles(self) -> List[str]:
+        """
+        Get list of earned titles based on maxed multipliers.
+
+        Titles are badges earned by reaching maximum bonus in a category.
+
+        Returns:
+            List of earned title strings
+        """
+        titles = []
+
+        # Historic: 90+ day uptime streak (maxed streak bonus)
+        if self.uptime_streak_days >= UPTIME_STREAK_TIER_5:
+            titles.append("historic")
+
+        # Whale: Maxed stake bonus (+25%)
+        # Stake bonus maxes at 55 SATORI (50 min + 5 extra)
+        if calculate_stake_bonus(self.stake_amount) >= STAKE_BONUS_CAP:
+            titles.append("whale")
+
+        # Friendly: Diamond referral tier (2000+)
+        if self.referral_count >= REFERRAL_TIER_DIAMOND:
+            titles.append("friendly")
+
+        # Charity: Diamond donor tier (5,000,000+ EVR)
+        if self.total_donated_evr >= DONATION_TIER_DIAMOND:
+            titles.append("charity")
+
+        # Civic: Diamond governance tier (95% voting, 5+ proposals, 50+ comments)
+        if get_governance_tier(
+            self.governance_vote_rate,
+            self.governance_proposals,
+            self.governance_comments
+        ) == 'diamond':
+            titles.append("civic")
+
+        # Legend: Maxed ALL multipliers (achieved 2.25x)
+        # Check if they have all titles (whale, historic, friendly, charity, civic)
+        # Plus need maxed role bonus and pool diversity
+        if len(titles) >= 5:  # Has whale, historic, friendly, charity, civic
+            # Also need to be a signer (max role) to truly max everything
+            if self.signer_qualified:
+                titles.append("legend")
+
+        return titles
 
 
 def get_role_multiplier(

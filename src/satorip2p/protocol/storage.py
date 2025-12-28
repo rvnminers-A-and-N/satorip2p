@@ -702,6 +702,11 @@ class StorageManager:
         self._peers = peers
         self._storage_dir = storage_dir or DEFAULT_STORAGE_DIR
 
+        # Backend enabled states
+        # Note: Memory and File are always enabled (required for operation)
+        # Only DHT is toggleable
+        self._dht_enabled = True
+
         # Storage instances
         self.deferred_rewards = DeferredRewardsStorage(peers, self._storage_dir)
         self.alerts = AlertStorage(peers, self._storage_dir)
@@ -760,3 +765,104 @@ class StorageManager:
         for storage in self._custom.values():
             total += storage.get_pending_sync_count()
         return total
+
+    def get_status(self) -> Dict[str, Any]:
+        """
+        Get status of all storage backends.
+
+        Returns:
+            Dict with backend status and item counts
+        """
+        return {
+            'backends': {
+                'memory': {
+                    'enabled': True,  # Memory is always enabled (required)
+                    'items': self._get_memory_item_count(),
+                },
+                'file': {
+                    'enabled': True,  # File is always enabled (core persistence)
+                    'items': self._get_file_item_count(),
+                },
+                'dht': {
+                    'enabled': self._dht_enabled,
+                    'items': self._get_dht_item_count(),
+                },
+            },
+            'pending_sync': self.get_pending_sync_total(),
+        }
+
+    def _get_memory_item_count(self) -> int:
+        """Get total items in memory across all storage instances."""
+        count = 0
+        if hasattr(self.deferred_rewards, '_memory') and self.deferred_rewards._memory:
+            count += len(getattr(self.deferred_rewards._memory, '_data', {}))
+        if hasattr(self.alerts, '_memory') and self.alerts._memory:
+            count += len(getattr(self.alerts._memory, '_data', {}))
+        return count
+
+    def _get_file_item_count(self) -> int:
+        """Get total items in file storage across all storage instances."""
+        count = 0
+        if hasattr(self.deferred_rewards, '_disk') and self.deferred_rewards._disk:
+            count += getattr(self.deferred_rewards._disk, '_item_count', 0)
+        if hasattr(self.alerts, '_disk') and self.alerts._disk:
+            count += getattr(self.alerts._disk, '_item_count', 0)
+        return count
+
+    def _get_dht_item_count(self) -> int:
+        """Get total items synced to DHT."""
+        count = 0
+        if hasattr(self.deferred_rewards, '_dht_synced_count'):
+            count += self.deferred_rewards._dht_synced_count
+        if hasattr(self.alerts, '_dht_synced_count'):
+            count += self.alerts._dht_synced_count
+        return count
+
+    def toggle_backend(self, backend: str, enabled: bool) -> bool:
+        """
+        Enable or disable a storage backend.
+
+        Only DHT can be toggled. Memory and File are always enabled as they
+        are required for the storage system to function.
+
+        Args:
+            backend: 'dht' (only toggleable backend)
+            enabled: True to enable, False to disable
+
+        Returns:
+            True if successful, False if invalid backend
+        """
+        if backend == 'memory':
+            # Memory is required for read/write operations
+            logger.warning("Memory storage cannot be toggled - required for operation")
+            return False
+        elif backend == 'file':
+            # File storage cannot be disabled - it's the core persistence layer
+            logger.warning("File storage cannot be toggled - always enabled")
+            return False
+        elif backend == 'dht':
+            self._dht_enabled = enabled
+            self._toggle_backend_on_storage(self.deferred_rewards, 'dht', enabled)
+            self._toggle_backend_on_storage(self.alerts, 'dht', enabled)
+            return True
+        return False
+
+    def _toggle_backend_on_storage(
+        self,
+        storage: 'RedundantStorage',
+        backend: str,
+        enabled: bool
+    ) -> None:
+        """Toggle a specific backend on a storage instance.
+
+        Only DHT is toggleable. Memory and File are always enabled.
+        """
+        if backend == 'dht':
+            if enabled:
+                if not storage._dht and self._peers:
+                    storage._dht = DHTBackend(self._peers)
+                storage.enable_dht = True
+            else:
+                storage._dht = None
+                storage.enable_dht = False
+        # Note: 'memory' and 'file' backends are not toggleable - always enabled

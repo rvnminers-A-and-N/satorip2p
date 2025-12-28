@@ -914,23 +914,322 @@ class AssetBadgeIssuer:
 
     # Predefined achievement types for reference
     ACHIEVEMENT_TYPES = {
+        # ===================
+        # PREDICTION ACHIEVEMENTS
+        # ===================
         'PERFECT': 'Perfect prediction accuracy (error < 0.1%)',
         'FAST': 'Fastest commit time in round',
         'EARLY': 'Among first 10 predictors in round',
         'CALIBRATED': 'Best calibration score (confidence matched accuracy)',
         'CONSISTENT': 'Lowest score variance over past 10 rounds',
+        'COMEBACK': 'Biggest rank improvement from previous round',
+        'WHALE': 'Highest stake committed in round',
+        'UNDERDOG': 'Won with minimum stake',
+        'FIRST_WIN': 'First time in top 10',
+
+        # ===================
+        # STREAK ACHIEVEMENTS
+        # ===================
         'STREAK_5': '5 consecutive rounds of participation',
         'STREAK_10': '10 consecutive rounds of participation',
         'STREAK_25': '25 consecutive rounds of participation',
         'STREAK_50': '50 consecutive rounds of participation',
         'STREAK_100': '100 consecutive rounds of participation',
-        'COMEBACK': 'Biggest rank improvement from previous round',
-        'WHALE': 'Highest stake committed in round',
-        'UNDERDOG': 'Won with minimum stake',
-        'FIRST_WIN': 'First time in top 10',
+        'STREAK_365': '365 consecutive rounds (1 year streak)',
+
+        # ===================
+        # MILESTONE ACHIEVEMENTS
+        # ===================
         'VETERAN': 'Participated in 100+ rounds',
+        'CENTURION': 'Participated in 500+ rounds',
+        'LEGENDARY': 'Participated in 1000+ rounds',
         'FOUNDER': 'Participated in epoch 1',
+        'GENESIS': 'Among first 100 predictors ever',
+
+        # ===================
+        # GOVERNANCE ACHIEVEMENTS
+        # ===================
+        'VOTER': 'Cast first governance vote',
+        'VOTER_10': 'Voted on 10 proposals',
+        'VOTER_50': 'Voted on 50 proposals',
+        'VOTER_100': 'Voted on 100 proposals',
+        'PROPOSER': 'Created first proposal',
+        'PROPOSER_PASSED': 'First proposal passed',
+        'PROPOSER_5': 'Created 5 proposals',
+        'ACTIVIST': 'Voted on every proposal in an epoch',
+        'CIVIC_BRONZE': 'Reached Bronze governance tier',
+        'CIVIC_SILVER': 'Reached Silver governance tier',
+        'CIVIC_GOLD': 'Reached Gold governance tier',
+        'CIVIC_PLATINUM': 'Reached Platinum governance tier',
+        'CIVIC_DIAMOND': 'Reached Diamond governance tier',
+
+        # ===================
+        # SOCIAL/REFERRAL ACHIEVEMENTS
+        # ===================
+        'RECRUITER': 'First successful referral',
+        'NETWORKER': '10 successful referrals',
+        'AMBASSADOR': '50 successful referrals',
+        'EVANGELIST': '100 successful referrals',
+        'INFLUENCER': '500 successful referrals',
+        'REFERRAL_BRONZE': 'Reached Bronze referral tier',
+        'REFERRAL_SILVER': 'Reached Silver referral tier',
+        'REFERRAL_GOLD': 'Reached Gold referral tier',
+        'REFERRAL_PLATINUM': 'Reached Platinum referral tier',
+        'REFERRAL_DIAMOND': 'Reached Diamond referral tier',
+
+        # ===================
+        # DONATION ACHIEVEMENTS
+        # ===================
+        'DONOR': 'First donation to treasury',
+        'SUPPORTER': 'Donated 10,000+ EVR total',
+        'BENEFACTOR': 'Donated 100,000+ EVR total',
+        'PATRON': 'Donated 500,000+ EVR total',
+        'PHILANTHROPIST': 'Donated 1,000,000+ EVR total',
+        'DONATION_BRONZE': 'Reached Bronze donation tier',
+        'DONATION_SILVER': 'Reached Silver donation tier',
+        'DONATION_GOLD': 'Reached Gold donation tier',
+        'DONATION_PLATINUM': 'Reached Platinum donation tier',
+        'DONATION_DIAMOND': 'Reached Diamond donation tier',
+
+        # ===================
+        # ROLE ACHIEVEMENTS
+        # ===================
+        'RELAY_DEBUT': 'First round as relay node',
+        'RELAY_VETERAN': '100 rounds as relay node',
+        'RELAY_LEGEND': '1000 rounds as relay node',
+        'ORACLE_DEBUT': 'First observation submitted as oracle',
+        'ORACLE_VETERAN': '100 observations as oracle',
+        'ORACLE_LEGEND': '1000 observations as oracle',
+        'SIGNER_DEBUT': 'First signature as signer',
+        'SIGNER_VETERAN': '100 signatures as signer',
+        'CURATOR_DEBUT': 'First curation action (flag/vote)',
+        'ARCHIVER_DEBUT': 'First archive created',
+
+        # ===================
+        # UPTIME ACHIEVEMENTS
+        # ===================
+        'RELIABLE': '7 day uptime streak (95%+)',
+        'DEPENDABLE': '30 day uptime streak (95%+)',
+        'STEADFAST': '60 day uptime streak (95%+)',
+        'UNWAVERING': '90 day uptime streak (95%+)',
+        'UPTIME_BRONZE': 'Reached Bronze uptime tier',
+        'UPTIME_SILVER': 'Reached Silver uptime tier',
+        'UPTIME_GOLD': 'Reached Gold uptime tier',
+        'UPTIME_PLATINUM': 'Reached Platinum uptime tier',
+        'UPTIME_DIAMOND': 'Reached Diamond uptime tier',
+
+        # ===================
+        # RARE/SPECIAL ACHIEVEMENTS
+        # ===================
+        'TRIPLE_CROWN': 'Top 3 finish in 3 consecutive rounds',
+        'DARK_HORSE': 'Won round with lowest stake among top 10',
+        'PHOTO_FINISH': 'Won by less than 0.01% score difference',
+        'SWEEP': 'Rank 1 in 5 consecutive rounds',
+        'PERFECTIONIST': '3 perfect predictions in a row',
+        'NIGHT_OWL': 'Submitted prediction between 00:00-04:00 UTC',
+        'EARLY_BIRD': 'First prediction of the round',
+        'BUZZER_BEATER': 'Submitted within last 60 seconds of deadline',
+        'IRON_MAN': 'Never missed a round for 30 days',
+        'DIAMOND_HANDS': 'Held stake through 10 losing rounds without withdrawing',
+        'COMEBACK_KID': 'Improved from bottom 50% to top 10 in one round',
+        'SILENT_GIANT': 'Top 10 finish with no comments/governance participation',
+        'ALL_ROUNDER': 'Achieved all role badges (relay, oracle, predictor)',
+        'MULTIPLIER_MAX': 'Achieved 2.0x+ total multiplier',
+        'TITLE_COLLECTOR': 'Earned 3+ titles',
+        'BADGE_HUNTER': 'Earned 25+ achievement badges',
+        'CENTURY_CLUB': '100 total badges collected',
     }
+
+    # Title badges (earned by maxing categories)
+    TITLE_BADGES = {
+        'HISTORIC': 'historic - 90+ day uptime streak',
+        'FRIENDLY': 'friendly - Diamond referral tier (2000+ referrals)',
+        'CHARITY': 'charity - Diamond donor tier (5M+ EVR donated)',
+        'CIVIC': 'civic - Diamond governance tier (95% voting, 5+ proposals, 50+ comments)',
+        'WHALE': 'whale - Maxed stake bonus (55+ SATORI staked)',
+        'LEGEND': 'legend - All multipliers maxed + signer role',
+    }
+
+    async def issue_title_badge(
+        self,
+        title: str,
+        recipient: str,
+        epoch: Optional[int] = None,
+        ipfs_hash: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Issue a title badge to a user who earned it.
+
+        Title badges are permanent achievements for maxing out multiplier categories:
+        - HISTORIC: 90+ day uptime streak
+        - FRIENDLY: Diamond referral tier (2000+ referrals)
+        - CHARITY: Diamond donor tier (5M+ EVR donated)
+        - CIVIC: Diamond governance tier
+        - WHALE: Maxed stake bonus
+        - LEGEND: All multipliers maxed + signer
+
+        Badge naming: SATORI#TITLE_{title}_{epoch} (epoch optional)
+        Example: SATORI#TITLE_HISTORIC or SATORI#TITLE_LEGEND_42
+
+        Args:
+            title: Title name (historic, friendly, charity, civic, whale, legend)
+            recipient: Address to receive badge
+            epoch: Optional epoch when title was earned (for uniqueness)
+            ipfs_hash: Optional IPFS hash for metadata
+
+        Returns:
+            Transaction hash if successful
+        """
+        title_upper = title.upper()
+        if title_upper not in self.TITLE_BADGES:
+            logger.warning(f"Unknown title: {title}")
+            return None
+
+        # Build badge tag
+        if epoch is not None:
+            badge_tag = f"TITLE_{title_upper}_{epoch}"
+        else:
+            badge_tag = f"TITLE_{title_upper}"
+
+        if self.dry_run:
+            logger.info(f"DRY RUN: Would issue {self.ROOT_ASSET}#{badge_tag} to {recipient}")
+            return f"dry_run_{self.ROOT_ASSET}#{badge_tag}"
+
+        try:
+            ipfs_hashes = [ipfs_hash] if ipfs_hash else []
+
+            tx_hash = self.rpc.call(
+                'issueunique',
+                self.ROOT_ASSET,
+                [badge_tag],
+                ipfs_hashes,
+                recipient,
+                "",
+            )
+
+            logger.info(f"Issued title badge {self.ROOT_ASSET}#{badge_tag} to {recipient}: {tx_hash}")
+            return tx_hash
+
+        except Exception as e:
+            logger.error(f"Failed to issue title badge {self.ROOT_ASSET}#{badge_tag}: {e}")
+            return None
+
+    async def issue_tier_badge(
+        self,
+        category: str,
+        tier: str,
+        recipient: str,
+        epoch: Optional[int] = None,
+        ipfs_hash: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Issue a tier badge when user reaches a new tier in any category.
+
+        Categories: STAKE, REFERRAL, DONATION, UPTIME, GOVERNANCE
+        Tiers: BRONZE, SILVER, GOLD, PLATINUM, DIAMOND
+
+        Badge naming: SATORI#TIER_{category}_{tier}_{epoch}
+        Example: SATORI#TIER_GOVERNANCE_GOLD_42
+
+        Args:
+            category: Category name (stake, referral, donation, uptime, governance)
+            tier: Tier name (bronze, silver, gold, platinum, diamond)
+            recipient: Address to receive badge
+            epoch: Optional epoch when tier was reached
+            ipfs_hash: Optional IPFS hash for metadata
+
+        Returns:
+            Transaction hash if successful
+        """
+        category_upper = category.upper()
+        tier_upper = tier.upper()
+
+        valid_categories = ['STAKE', 'REFERRAL', 'DONATION', 'UPTIME', 'GOVERNANCE']
+        valid_tiers = ['BRONZE', 'SILVER', 'GOLD', 'PLATINUM', 'DIAMOND']
+
+        if category_upper not in valid_categories:
+            logger.warning(f"Unknown category: {category}")
+            return None
+
+        if tier_upper not in valid_tiers:
+            logger.warning(f"Unknown tier: {tier}")
+            return None
+
+        # Build badge tag
+        if epoch is not None:
+            badge_tag = f"TIER_{category_upper}_{tier_upper}_{epoch}"
+        else:
+            badge_tag = f"TIER_{category_upper}_{tier_upper}"
+
+        if self.dry_run:
+            logger.info(f"DRY RUN: Would issue {self.ROOT_ASSET}#{badge_tag} to {recipient}")
+            return f"dry_run_{self.ROOT_ASSET}#{badge_tag}"
+
+        try:
+            ipfs_hashes = [ipfs_hash] if ipfs_hash else []
+
+            tx_hash = self.rpc.call(
+                'issueunique',
+                self.ROOT_ASSET,
+                [badge_tag],
+                ipfs_hashes,
+                recipient,
+                "",
+            )
+
+            logger.info(f"Issued tier badge {self.ROOT_ASSET}#{badge_tag} to {recipient}: {tx_hash}")
+            return tx_hash
+
+        except Exception as e:
+            logger.error(f"Failed to issue tier badge {self.ROOT_ASSET}#{badge_tag}: {e}")
+            return None
+
+    async def check_and_issue_new_titles(
+        self,
+        address: str,
+        node_roles: "NodeRoles",
+        epoch: int
+    ) -> List[str]:
+        """
+        Check if user has earned new titles and issue badges.
+
+        Compares current earned titles against previously issued badges
+        and issues any new ones.
+
+        Args:
+            address: User's address
+            node_roles: NodeRoles object with current stats
+            epoch: Current epoch number
+
+        Returns:
+            List of newly issued badge tags
+        """
+        from ..protocol.rewards import NodeRoles  # Import here to avoid circular
+
+        # Get currently earned titles
+        earned_titles = node_roles.get_earned_titles()
+
+        # Get already issued title badges
+        existing_badges = await self.get_badges_for_address(address)
+        existing_titles = set()
+        for badge in existing_badges:
+            if '#TITLE_' in badge:
+                # Extract title name from badge (e.g., SATORI#TITLE_HISTORIC_42 -> HISTORIC)
+                parts = badge.split('#TITLE_')[1].split('_')
+                existing_titles.add(parts[0].lower())
+
+        # Issue new titles
+        new_badges = []
+        for title in earned_titles:
+            if title not in existing_titles:
+                tx_hash = await self.issue_title_badge(title, address, epoch)
+                if tx_hash:
+                    new_badges.append(f"TITLE_{title.upper()}_{epoch}")
+
+        if new_badges:
+            logger.info(f"Issued {len(new_badges)} new title badges to {address}: {new_badges}")
+
+        return new_badges
 
     async def get_badge_holders(self, badge_tag: str) -> List[str]:
         """

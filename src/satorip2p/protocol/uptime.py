@@ -56,7 +56,9 @@ ROUND_SYNC_TOPIC = "satori/round-sync"
 HEARTBEAT_PROTOCOL_VERSION = "1.0.0"
 
 # Round settings - aligned with Satori Network prediction rounds
-ROUND_DURATION = 86400  # 24 hours in seconds
+# Each round is 1 day, 7 rounds per epoch (weekly)
+ROUND_DURATION = 86400  # 24 hours in seconds (1 day)
+EPOCH_DURATION = 7 * 86400  # 604,800 seconds (1 week)
 ROUND_SYNC_INTERVAL = 60  # Broadcast round info every 60 seconds (matches heartbeat)
 
 # NOTE: Bootstrap peers are configured in satorip2p/config.py (BOOTSTRAP_PEERS)
@@ -287,6 +289,20 @@ class NodeUptimeRecord:
     expected_heartbeats: int # Expected based on round duration
     uptime_percentage: float # Calculated uptime
     is_relay_qualified: bool # Meets 95% threshold
+    uptime_streak_days: int = 0  # Consecutive days with ≥95% uptime
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class NodeStreakRecord:
+    """Tracks uptime streak across rounds for a node."""
+    node_id: str
+    streak_days: int = 0              # Current consecutive days with ≥95% uptime
+    last_qualified_round: str = ""    # Last round where node had ≥95% uptime
+    streak_start_date: str = ""       # Date streak started (YYYY-MM-DD)
+    longest_streak: int = 0           # Longest streak ever achieved
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -404,6 +420,9 @@ class UptimeTracker:
         # Round sync state
         self._known_rounds: Dict[str, int] = {}  # round_id -> start_time
         self._last_round_sync: int = 0
+
+        # Uptime streak tracking: {node_id: NodeStreakRecord}
+        self._uptime_streaks: Dict[str, NodeStreakRecord] = {}
 
         # Subscribe to heartbeat topic if peers available
         if self.peers:
@@ -984,6 +1003,119 @@ class UptimeTracker:
     def get_node_roles(self, node_id: str) -> Set[str]:
         """Get declared roles for a node."""
         return self._node_roles.get(node_id, set())
+
+    def get_uptime_streak(self, node_id: str) -> int:
+        """
+        Get current uptime streak days for a node.
+
+        Args:
+            node_id: Node to check
+
+        Returns:
+            Number of consecutive days with ≥95% uptime
+        """
+        if node_id in self._uptime_streaks:
+            return self._uptime_streaks[node_id].streak_days
+        return 0
+
+    def get_uptime_streak_record(self, node_id: str) -> Optional[NodeStreakRecord]:
+        """
+        Get full uptime streak record for a node.
+
+        Args:
+            node_id: Node to check
+
+        Returns:
+            NodeStreakRecord or None if no record exists
+        """
+        return self._uptime_streaks.get(node_id)
+
+    def update_uptime_streak(self, node_id: str, round_id: str, is_qualified: bool) -> int:
+        """
+        Update uptime streak for a node based on round qualification.
+
+        Call this at the end of each round to update streak tracking.
+
+        Args:
+            node_id: Node to update
+            round_id: Round that just ended (format: "round_YYYY-MM-DD")
+            is_qualified: Whether the node met 95% uptime threshold
+
+        Returns:
+            New streak days count
+        """
+        # Extract date from round_id
+        round_date = round_id.replace("round_", "") if round_id.startswith("round_") else round_id
+
+        # Get or create streak record
+        if node_id not in self._uptime_streaks:
+            self._uptime_streaks[node_id] = NodeStreakRecord(node_id=node_id)
+
+        record = self._uptime_streaks[node_id]
+
+        if is_qualified:
+            # Check if this continues the streak (consecutive days)
+            if record.last_qualified_round:
+                # Extract date from last round
+                last_date = record.last_qualified_round.replace("round_", "")
+                # Check if dates are consecutive (simplified check)
+                from datetime import datetime, timedelta
+                try:
+                    last_dt = datetime.strptime(last_date, "%Y-%m-%d")
+                    current_dt = datetime.strptime(round_date, "%Y-%m-%d")
+                    expected_dt = last_dt + timedelta(days=1)
+
+                    if current_dt == expected_dt:
+                        # Consecutive day - extend streak
+                        record.streak_days += 1
+                    elif current_dt == last_dt:
+                        # Same day (re-processing) - no change
+                        pass
+                    else:
+                        # Gap in streak - reset
+                        record.streak_days = 1
+                        record.streak_start_date = round_date
+                except ValueError:
+                    # Date parsing failed - treat as new streak
+                    record.streak_days = 1
+                    record.streak_start_date = round_date
+            else:
+                # First qualified round
+                record.streak_days = 1
+                record.streak_start_date = round_date
+
+            record.last_qualified_round = round_id
+
+            # Update longest streak
+            if record.streak_days > record.longest_streak:
+                record.longest_streak = record.streak_days
+
+            logger.debug(f"Node {node_id} uptime streak: {record.streak_days} days")
+        else:
+            # Did not qualify - reset streak
+            if record.streak_days > 0:
+                logger.info(f"Node {node_id} uptime streak reset (was {record.streak_days} days)")
+            record.streak_days = 0
+            record.streak_start_date = ""
+
+        return record.streak_days
+
+    def get_top_uptime_streaks(self, limit: int = 10) -> List[NodeStreakRecord]:
+        """
+        Get nodes with highest uptime streaks.
+
+        Args:
+            limit: Maximum number of results
+
+        Returns:
+            List of NodeStreakRecord sorted by streak_days descending
+        """
+        sorted_records = sorted(
+            self._uptime_streaks.values(),
+            key=lambda r: r.streak_days,
+            reverse=True
+        )
+        return sorted_records[:limit]
 
     def clear_round(self, round_id: str) -> None:
         """

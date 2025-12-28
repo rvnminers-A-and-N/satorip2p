@@ -191,6 +191,9 @@ class Peers:
         self._peer_latency_history: Dict[str, List[float]] = {}  # Last N measurements
         self._latency_history_size = 10  # Keep last 10 measurements per peer
 
+        # Bandwidth tracking (optional, set via set_bandwidth_tracker)
+        self._bandwidth_tracker = None
+
     # ========== Lifecycle ==========
 
     async def start(self) -> bool:
@@ -1013,6 +1016,11 @@ class Peers:
                 logger.info(f"Broadcasting to topic {topic}")
                 await self._pubsub.publish(topic, data)
                 logger.info(f"Broadcast to {topic} successful")
+
+                # Track bandwidth for outgoing message
+                if self._bandwidth_tracker:
+                    await self._bandwidth_tracker.account_publish(stream_id, len(data))
+
                 # GossipSub handles mesh propagation
                 subs = self._subscriptions.get_subscribers(stream_id) if self._subscriptions else []
                 return len(subs)
@@ -1304,6 +1312,16 @@ class Peers:
     def get_peer_count(self) -> int:
         """Get count of currently connected peers."""
         return len(self.get_connected_peers())
+
+    def set_bandwidth_tracker(self, tracker) -> None:
+        """
+        Set the bandwidth tracker for monitoring network traffic.
+
+        Args:
+            tracker: BandwidthTracker instance from satorip2p.protocol.bandwidth
+        """
+        self._bandwidth_tracker = tracker
+        logger.debug("Bandwidth tracker attached to Peers")
 
     def on_connection_change(self, callback: Callable[[str, bool], None]) -> None:
         """
@@ -2543,7 +2561,15 @@ class Peers:
         while stream_id in self._my_subscriptions:
             try:
                 msg = await subscription.get()
-                logger.info(f"Received message on {stream_id}: {len(msg.data)} bytes")
+                byte_size = len(msg.data)
+                logger.info(f"Received message on {stream_id}: {byte_size} bytes")
+
+                # Track bandwidth for incoming message
+                if self._bandwidth_tracker:
+                    # msg.from_id contains the original author peer ID
+                    peer_id = str(msg.from_id) if hasattr(msg, 'from_id') and msg.from_id else None
+                    await self._bandwidth_tracker.account_receive(stream_id, byte_size, peer_id)
+
                 data = deserialize_message(msg.data)
                 if stream_id in self._callbacks:
                     callbacks = self._callbacks[stream_id]

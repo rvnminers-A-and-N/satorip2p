@@ -28,10 +28,14 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 # Epoch duration in seconds (1 week = 7 days)
-EPOCH_DURATION = 7 * 24 * 60 * 60  # 604800 seconds
+# Each epoch represents a weekly reward/governance cycle
+# 52 epochs per year, 7 rounds per epoch
+EPOCH_DURATION = 7 * 24 * 60 * 60  # 604,800 seconds (7 days)
 
 # Round duration in seconds (1 day)
-ROUND_DURATION = 24 * 60 * 60  # 86400 seconds
+# Each round is a daily prediction cycle
+# 7 rounds per epoch
+ROUND_DURATION = 24 * 60 * 60  # 86,400 seconds (1 day)
 
 # Donation tier thresholds (cumulative EVR)
 DONATION_TIERS = {

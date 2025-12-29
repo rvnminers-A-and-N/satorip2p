@@ -775,6 +775,28 @@ class Peers:
                     router = self._pubsub.router
                     repairs_made = 0
 
+                    # Step 1: Try to add connected peers to pubsub if they're missing
+                    # This fixes py-libp2p issue where pubsub doesn't open streams to all peers
+                    connected_peers = self.get_connected_peers()
+                    pubsub_peers = set(self._pubsub.peers.keys()) if hasattr(self._pubsub, 'peers') else set()
+                    missing_from_pubsub = set(connected_peers) - pubsub_peers
+
+                    if missing_from_pubsub:
+                        logger.debug(f"Mesh repair: {len(missing_from_pubsub)} connected peers missing from pubsub")
+                        for peer_id in missing_from_pubsub:
+                            try:
+                                # Try to open pubsub stream to this peer
+                                if hasattr(self._host, 'new_stream'):
+                                    protocols = router.get_protocols() if hasattr(router, 'get_protocols') else ['/meshsub/1.1.0']
+                                    stream = await self._host.new_stream(peer_id, protocols)
+                                    if stream:
+                                        # Add peer to pubsub router
+                                        await router.add_peer(peer_id, stream.get_protocol() if hasattr(stream, 'get_protocol') else protocols[0])
+                                        logger.info(f"Mesh repair: added peer {str(peer_id)[:16]}... to pubsub")
+                            except Exception as e:
+                                logger.debug(f"Mesh repair: could not add {str(peer_id)[:16]}... to pubsub: {e}")
+
+                    # Step 2: Original mesh repair - graft peers from peer_topics
                     for topic in list(router.mesh.keys()):
                         mesh_peers = router.mesh.get(topic, set())
                         mesh_size = len(mesh_peers)

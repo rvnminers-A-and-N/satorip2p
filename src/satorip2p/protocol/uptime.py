@@ -527,6 +527,11 @@ class UptimeTracker:
         if not self.peers or not self._current_round:
             return
 
+        # Check if pubsub is ready (avoid broadcasting before connection is established)
+        if hasattr(self.peers, '_pubsub') and not self.peers._pubsub:
+            logger.debug("Skipping round sync broadcast: pubsub not ready")
+            return
+
         try:
             message = {
                 'round_id': self._current_round,
@@ -571,7 +576,9 @@ class UptimeTracker:
             self.start_round(round_id, round_start)
             logger.info(f"Started round {round_id} (UTC midnight aligned)")
 
-        # Broadcast our round to help other nodes sync
+        # Broadcast our round to help other nodes sync (delay to ensure pubsub is ready)
+        import trio
+        await trio.sleep(1.0)  # Wait for pubsub connections to stabilize
         await self._broadcast_round_sync()
 
         # Spawn heartbeat loop if nursery provided

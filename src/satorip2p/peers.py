@@ -777,12 +777,16 @@ class Peers:
 
                     # Step 1: Try to add connected peers to pubsub if they're missing
                     # This fixes py-libp2p issue where pubsub doesn't open streams to all peers
-                    connected_peers = self.get_connected_peers()
+                    # Get PeerID objects directly from network connections
+                    try:
+                        connected_peer_ids = list(self._host.get_network().connections.keys())
+                    except Exception:
+                        connected_peer_ids = []
                     pubsub_peers = set(self._pubsub.peers.keys()) if hasattr(self._pubsub, 'peers') else set()
-                    missing_from_pubsub = set(connected_peers) - pubsub_peers
+                    missing_from_pubsub = set(connected_peer_ids) - pubsub_peers
 
                     if missing_from_pubsub:
-                        logger.debug(f"Mesh repair: {len(missing_from_pubsub)} connected peers missing from pubsub")
+                        logger.info(f"Mesh repair: {len(missing_from_pubsub)} connected peers missing from pubsub")
                         for peer_id in missing_from_pubsub:
                             try:
                                 # Try to open pubsub stream to this peer
@@ -792,9 +796,9 @@ class Peers:
                                     if stream:
                                         # Add peer to pubsub router
                                         await router.add_peer(peer_id, stream.get_protocol() if hasattr(stream, 'get_protocol') else protocols[0])
-                                        logger.info(f"Mesh repair: added peer {str(peer_id)[:16]}... to pubsub")
+                                        logger.info(f"Mesh repair: added peer {peer_id} to pubsub")
                             except Exception as e:
-                                logger.debug(f"Mesh repair: could not add {str(peer_id)[:16]}... to pubsub: {e}")
+                                logger.info(f"Mesh repair: could not add {peer_id} to pubsub: {e}")
 
                     # Step 2: Original mesh repair - graft peers from peer_topics
                     for topic in list(router.mesh.keys()):

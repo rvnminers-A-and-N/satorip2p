@@ -794,8 +794,9 @@ class Peers:
                                     protocols = router.get_protocols() if hasattr(router, 'get_protocols') else ['/meshsub/1.1.0']
                                     stream = await self._host.new_stream(peer_id, protocols)
                                     if stream:
-                                        # Add peer to pubsub router
-                                        await router.add_peer(peer_id, stream.get_protocol() if hasattr(stream, 'get_protocol') else protocols[0])
+                                        # Add peer to pubsub router (sync function)
+                                        protocol = stream.get_protocol() if hasattr(stream, 'get_protocol') else protocols[0]
+                                        router.add_peer(peer_id, protocol)
                                         logger.info(f"Mesh repair: added peer {peer_id} to pubsub")
                             except Exception as e:
                                 logger.info(f"Mesh repair: could not add {peer_id} to pubsub: {e}")

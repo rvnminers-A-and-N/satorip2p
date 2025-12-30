@@ -791,17 +791,17 @@ class Peers:
                         logger.info(f"Mesh repair: {len(missing_from_pubsub)} connected peers missing from pubsub")
                         for peer_id in missing_from_pubsub:
                             try:
-                                # Try to open pubsub stream to this peer
-                                if hasattr(self._host, 'new_stream'):
-                                    protocols = router.get_protocols() if hasattr(router, 'get_protocols') else ['/meshsub/1.1.0']
-                                    stream = await self._host.new_stream(peer_id, protocols)
-                                    if stream:
-                                        # Add peer to pubsub router (sync function)
-                                        protocol = stream.get_protocol() if hasattr(stream, 'get_protocol') else protocols[0]
-                                        router.add_peer(peer_id, protocol)
-                                        logger.info(f"Mesh repair: added peer {peer_id} to pubsub")
+                                # Use pubsub's _handle_new_peer to properly setup the stream
+                                # This sends hello packet and stores stream in pubsub.peers
+                                if hasattr(self._pubsub, '_handle_new_peer'):
+                                    await self._pubsub._handle_new_peer(peer_id)
+                                    # Check if it worked
+                                    if peer_id in self._pubsub.peers:
+                                        logger.info(f"Mesh repair: successfully added peer {peer_id} to pubsub")
+                                    else:
+                                        logger.debug(f"Mesh repair: _handle_new_peer did not add {peer_id}")
                             except Exception as e:
-                                logger.info(f"Mesh repair: could not add {peer_id} to pubsub: {e}")
+                                logger.debug(f"Mesh repair: could not add {peer_id} to pubsub: {e}")
 
                     # Step 2: Graft connected peers to mesh if they're in peer_topics but not in mesh
                     # This ensures all connected peers that subscribe to a topic are in our mesh
@@ -832,12 +832,12 @@ class Peers:
                     if repairs_made > 0:
                         logger.info(f"Mesh repair complete: {repairs_made} total peer(s) added across topics")
 
-                    # Log current mesh status for visibility
+                    # Log current mesh status for visibility (get fresh counts)
                     total_mesh_peers = sum(len(router.mesh.get(t, set())) for t in router.mesh.keys())
                     total_topics = len(router.mesh)
-                    pubsub_peer_count = len(pubsub_peers)
+                    current_pubsub_peers = len(self._pubsub.peers) if hasattr(self._pubsub, 'peers') else 0
                     connected_count = len(connected_peer_ids)
-                    logger.info(f"Mesh status: connected={connected_count}, pubsub={pubsub_peer_count}, topics={total_topics}, mesh_peers={total_mesh_peers}")
+                    logger.info(f"Mesh status: connected={connected_count}, pubsub={current_pubsub_peers}, topics={total_topics}, mesh_peers={total_mesh_peers}")
 
             except Exception as e:
                 logger.warning(f"Mesh repair task error: {e}")

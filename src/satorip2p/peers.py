@@ -766,8 +766,10 @@ class Peers:
 
         Runs every 60 seconds after an initial 45-second delay.
         """
+        logger.info("Mesh repair task starting (45s initial delay)...")
         # Wait for initial mesh formation
         await trio.sleep(45)
+        logger.info("Mesh repair task active - will check every 60s")
 
         while True:
             try:
@@ -801,38 +803,44 @@ class Peers:
                             except Exception as e:
                                 logger.info(f"Mesh repair: could not add {peer_id} to pubsub: {e}")
 
-                    # Step 2: Original mesh repair - graft peers from peer_topics
+                    # Step 2: Graft connected peers to mesh if they're in peer_topics but not in mesh
+                    # This ensures all connected peers that subscribe to a topic are in our mesh
+                    connected_set = set(connected_peer_ids)
                     for topic in list(router.mesh.keys()):
                         mesh_peers = router.mesh.get(topic, set())
                         mesh_size = len(mesh_peers)
                         peer_topics = self._pubsub.peer_topics.get(topic, set())
 
-                        # Only repair if mesh is below D_low and we have peers to add
-                        if mesh_size < router.degree_low and len(peer_topics) > mesh_size:
-                            # Find peers in peer_topics but not in mesh
-                            missing = peer_topics - mesh_peers
-                            # Add up to D peers total
-                            to_add = min(router.degree - mesh_size, len(missing))
+                        # Find connected peers that are subscribed to this topic but not in our mesh
+                        connected_subscribers = peer_topics & connected_set
+                        missing = connected_subscribers - mesh_peers
 
-                            if to_add > 0:
-                                added = 0
-                                for peer in list(missing)[:to_add]:
-                                    try:
-                                        router.mesh[topic].add(peer)
-                                        await router.emit_graft(topic, peer)
-                                        added += 1
-                                    except Exception as e:
-                                        logger.debug(f"Failed to graft peer {peer} to {topic}: {e}")
+                        if missing:
+                            added = 0
+                            for peer in list(missing):
+                                try:
+                                    router.mesh[topic].add(peer)
+                                    await router.emit_graft(topic, peer)
+                                    added += 1
+                                except Exception as e:
+                                    logger.debug(f"Failed to graft peer {peer} to {topic}: {e}")
 
-                                if added > 0:
-                                    logger.info(f"Mesh repair: added {added} peer(s) to {topic} (was {mesh_size}, now {mesh_size + added})")
-                                    repairs_made += added
+                            if added > 0:
+                                logger.info(f"Mesh repair: added {added} peer(s) to {topic} (was {mesh_size}, now {mesh_size + added})")
+                                repairs_made += added
 
                     if repairs_made > 0:
                         logger.info(f"Mesh repair complete: {repairs_made} total peer(s) added across topics")
 
+                    # Log current mesh status for visibility
+                    total_mesh_peers = sum(len(router.mesh.get(t, set())) for t in router.mesh.keys())
+                    total_topics = len(router.mesh)
+                    pubsub_peer_count = len(pubsub_peers)
+                    connected_count = len(connected_peer_ids)
+                    logger.info(f"Mesh status: connected={connected_count}, pubsub={pubsub_peer_count}, topics={total_topics}, mesh_peers={total_mesh_peers}")
+
             except Exception as e:
-                logger.debug(f"Mesh repair task error: {e}")
+                logger.warning(f"Mesh repair task error: {e}")
 
             # Check every 60 seconds
             await trio.sleep(60)

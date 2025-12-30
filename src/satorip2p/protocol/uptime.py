@@ -602,6 +602,17 @@ class UptimeTracker:
         logger.info("Heartbeat loop started")
         while self._is_heartbeating:
             try:
+                # Check for round change (new day at midnight UTC)
+                current_round_id, current_round_start = get_current_round()
+                if self._current_round != current_round_id:
+                    logger.info(f"Round changed: {self._current_round} -> {current_round_id}")
+                    self.start_round(current_round_id, current_round_start)
+                    # Reset heartbeat counters for new round
+                    self._heartbeats_sent = 0
+                    self._heartbeats_received = 0
+                    # Broadcast round sync to help other nodes
+                    await self._broadcast_round_sync()
+
                 # Send heartbeat (async version)
                 heartbeat = await self.send_heartbeat_async()
                 if heartbeat:

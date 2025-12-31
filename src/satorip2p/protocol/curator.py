@@ -588,6 +588,12 @@ class CuratorProtocol:
                 if c.status == status
             )
 
+        # Calculate average quality score across all curated streams
+        avg_quality_score = None
+        if self._stream_curations:
+            total_quality = sum(c.quality_score for c in self._stream_curations.values())
+            avg_quality_score = round(total_quality / len(self._stream_curations), 3)
+
         return {
             "started": self._started,
             "is_curator": self.is_curator,
@@ -596,6 +602,7 @@ class CuratorProtocol:
             "total_flags": total_flags,
             "unresolved_flags": unresolved_flags,
             "stream_status_counts": status_counts,
+            "avg_quality_score": avg_quality_score,
         }
 
     # ========================================================================

@@ -146,12 +146,20 @@ class ArchiveAnnouncement:
     total_size_mb: float
     timestamp: int
     signature: str = ""
+    integrity: float = 100.0         # Data integrity percentage (0-100)
+    valid_archives: int = 0          # Number of verified valid archives
+    total_archives: int = 0          # Total number of archives
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict) -> "ArchiveAnnouncement":
+        # Handle older announcements without integrity fields
+        data = dict(data)
+        data.setdefault('integrity', 100.0)
+        data.setdefault('valid_archives', 0)
+        data.setdefault('total_archives', len(data.get('available_rounds', [])))
         return cls(**data)
 
 
@@ -310,6 +318,9 @@ class ArchiverProtocol:
         # In-memory index of available archives
         self._local_archives: Dict[str, ArchiveMetadata] = {}
         self._network_archives: Dict[str, Dict[str, ArchiveAnnouncement]] = {}  # round_id -> {archiver -> announcement}
+
+        # Track archiver integrity scores from announcements
+        self._archiver_integrity: Dict[str, ArchiveAnnouncement] = {}  # archiver_address -> latest announcement
 
         # Pending requests
         self._pending_requests: Dict[str, Any] = {}
@@ -571,6 +582,47 @@ class ArchiverProtocol:
             "storage_path": str(self._storage_path),
         }
 
+    def get_network_integrity(self) -> dict:
+        """Get network-wide integrity statistics from archiver announcements.
+
+        Returns:
+            dict with:
+                - network_integrity: Average integrity across all archivers (0-100)
+                - archiver_count: Number of archivers reporting
+                - archivers: List of {address, integrity, valid, total, last_seen}
+        """
+        if not self._archiver_integrity:
+            return {
+                'network_integrity': None,
+                'archiver_count': 0,
+                'archivers': []
+            }
+
+        now = int(time.time())
+        archivers = []
+        total_integrity = 0.0
+
+        for addr, announcement in self._archiver_integrity.items():
+            age_seconds = now - announcement.timestamp
+            archivers.append({
+                'address': addr,
+                'integrity': announcement.integrity,
+                'valid_archives': announcement.valid_archives,
+                'total_archives': announcement.total_archives,
+                'last_seen': age_seconds,
+                'stale': age_seconds > 3600,  # Stale if over 1 hour old
+            })
+            total_integrity += announcement.integrity
+
+        # Calculate average integrity
+        avg_integrity = round(total_integrity / len(archivers), 1) if archivers else None
+
+        return {
+            'network_integrity': avg_integrity,
+            'archiver_count': len(archivers),
+            'archivers': archivers
+        }
+
     # ========================================================================
     # ANNOUNCEMENT METHODS
     # ========================================================================
@@ -583,6 +635,17 @@ class ArchiverProtocol:
         rounds = sorted(self._local_archives.keys())
         total_size = sum(m.size_bytes for m in self._local_archives.values())
 
+        # Calculate integrity by verifying all archives
+        valid_count = 0
+        for round_id in rounds:
+            try:
+                if self.verify_archive_integrity(round_id):
+                    valid_count += 1
+            except Exception:
+                pass  # Count as invalid
+
+        integrity = round((valid_count / len(rounds)) * 100, 1) if rounds else 100.0
+
         announcement = ArchiveAnnouncement(
             archiver_address=self._peers.evrmore_address or "",
             peer_id=self._peers.peer_id or "",
@@ -591,6 +654,9 @@ class ArchiverProtocol:
             newest_round=rounds[-1] if rounds else "",
             total_size_mb=total_size / (1024 * 1024),
             timestamp=int(time.time()),
+            integrity=integrity,
+            valid_archives=valid_count,
+            total_archives=len(rounds),
         )
 
         # Sign
@@ -603,7 +669,7 @@ class ArchiverProtocol:
                 ARCHIVE_ANNOUNCE_TOPIC,
                 json.dumps(announcement.to_dict()).encode()
             )
-            logger.debug(f"Announced {len(rounds)} archives to network")
+            logger.debug(f"Announced {len(rounds)} archives (integrity={integrity}%) to network")
         except Exception as e:
             logger.warning(f"Failed to announce archives: {e}")
 
@@ -710,7 +776,10 @@ class ArchiverProtocol:
                     self._network_archives[round_id] = {}
                 self._network_archives[round_id][announcement.archiver_address] = announcement
 
-            logger.debug(f"Received announcement from {announcement.archiver_address}: {len(announcement.available_rounds)} rounds")
+            # Track archiver integrity scores (latest announcement wins)
+            self._archiver_integrity[announcement.archiver_address] = announcement
+
+            logger.debug(f"Received announcement from {announcement.archiver_address}: {len(announcement.available_rounds)} rounds, integrity={announcement.integrity}%")
 
         except Exception as e:
             logger.warning(f"Error handling announcement: {e}")

@@ -424,6 +424,10 @@ class UptimeTracker:
         # Uptime streak tracking: {node_id: NodeStreakRecord}
         self._uptime_streaks: Dict[str, NodeStreakRecord] = {}
 
+        # Callbacks for external listeners (e.g., WebSocket bridge)
+        self._on_heartbeat_received: Optional[Callable[[Heartbeat], None]] = None
+        self._on_heartbeat_sent: Optional[Callable[[Heartbeat], None]] = None
+
         # Subscribe to heartbeat topic if peers available
         if self.peers:
             self._setup_pubsub()
@@ -544,6 +548,30 @@ class UptimeTracker:
             logger.debug(f"Broadcast round sync: {self._current_round}")
         except Exception as e:
             logger.warning(f"Failed to broadcast round sync: {e}")
+
+    # ========================================================================
+    # CALLBACK PROPERTIES
+    # ========================================================================
+
+    @property
+    def on_heartbeat_received(self) -> Optional[Callable[[Heartbeat], None]]:
+        """Callback invoked when a heartbeat is received from the network."""
+        return self._on_heartbeat_received
+
+    @on_heartbeat_received.setter
+    def on_heartbeat_received(self, callback: Optional[Callable[[Heartbeat], None]]) -> None:
+        """Set callback for received heartbeats."""
+        self._on_heartbeat_received = callback
+
+    @property
+    def on_heartbeat_sent(self) -> Optional[Callable[[Heartbeat], None]]:
+        """Callback invoked when we send a heartbeat to the network."""
+        return self._on_heartbeat_sent
+
+    @on_heartbeat_sent.setter
+    def on_heartbeat_sent(self, callback: Optional[Callable[[Heartbeat], None]]) -> None:
+        """Set callback for sent heartbeats."""
+        self._on_heartbeat_sent = callback
 
     # ========================================================================
     # PUBLIC API
@@ -714,6 +742,14 @@ class UptimeTracker:
         self._last_heartbeat = now
         self._last_status_message = heartbeat.status_message  # Store for UI display
         self._heartbeats_sent += 1
+
+        # Notify external listeners that we sent a heartbeat
+        if self._on_heartbeat_sent:
+            try:
+                self._on_heartbeat_sent(heartbeat)
+            except Exception as e:
+                logger.debug(f"Heartbeat sent callback error: {e}")
+
         return heartbeat
 
     def send_heartbeat(self, roles: Optional[List[str]] = None) -> Optional[Heartbeat]:
@@ -871,6 +907,13 @@ class UptimeTracker:
         # Increment received counter (for heartbeats from others)
         if heartbeat.node_id != self.node_id:
             self._heartbeats_received += 1
+
+        # Notify external listeners
+        if self._on_heartbeat_received:
+            try:
+                self._on_heartbeat_received(heartbeat)
+            except Exception as e:
+                logger.debug(f"Heartbeat received callback error: {e}")
 
         logger.debug(f"Received heartbeat from {heartbeat.node_id}")
         return True

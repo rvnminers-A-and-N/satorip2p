@@ -242,6 +242,14 @@ LIBP2P_PROTOCOLS: Dict[str, ProtocolInfo] = {
         category="libp2p",
         required=True,
     ),
+    "/meshsub/1.2.0": ProtocolInfo(
+        id="/meshsub/1.2.0",
+        name="gossipsub",
+        version="1.2.0",
+        description="GossipSub v1.2 - Latest pub/sub with IDONTWANT, improved peer scoring and protocol negotiation",
+        category="libp2p",
+        required=True,
+    ),
     "/floodsub/1.0.0": ProtocolInfo(
         id="/floodsub/1.0.0",
         name="floodsub",

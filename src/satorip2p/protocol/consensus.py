@@ -202,6 +202,8 @@ class ConsensusManager:
         # Callbacks
         self._on_consensus_reached: Optional[Callable[[ConsensusResult], None]] = None
         self._on_consensus_failed: Optional[Callable[[ConsensusResult], None]] = None
+        self._on_vote_received: Optional[Callable[[ConsensusVote], None]] = None
+        self._on_phase_change: Optional[Callable[[ConsensusPhase, Optional[str]], None]] = None
 
         # Subscribe to PubSub topics if peers available
         if self.peers:
@@ -229,6 +231,40 @@ class ConsensusManager:
             self.receive_vote(vote)
         except Exception as e:
             logger.error(f"Failed to handle vote message: {e}")
+
+    # ========================================================================
+    # CALLBACK PROPERTIES
+    # ========================================================================
+
+    @property
+    def on_vote_received(self) -> Optional[Callable[[ConsensusVote], None]]:
+        """Callback invoked when a vote is received from the network."""
+        return self._on_vote_received
+
+    @on_vote_received.setter
+    def on_vote_received(self, callback: Optional[Callable[[ConsensusVote], None]]) -> None:
+        """Set callback for received votes."""
+        self._on_vote_received = callback
+
+    @property
+    def on_phase_change(self) -> Optional[Callable[[ConsensusPhase, Optional[str]], None]]:
+        """Callback invoked when consensus phase changes."""
+        return self._on_phase_change
+
+    @on_phase_change.setter
+    def on_phase_change(self, callback: Optional[Callable[[ConsensusPhase, Optional[str]], None]]) -> None:
+        """Set callback for phase changes."""
+        self._on_phase_change = callback
+
+    def _set_phase(self, new_phase: ConsensusPhase) -> None:
+        """Set the consensus phase and notify listeners."""
+        old_phase = self._phase
+        self._phase = new_phase
+        if old_phase != new_phase and self._on_phase_change:
+            try:
+                self._on_phase_change(new_phase, self._current_round)
+            except Exception as e:
+                logger.debug(f"Phase change callback error: {e}")
 
     # ========================================================================
     # PUBLIC API
@@ -261,7 +297,7 @@ class ConsensusManager:
         logger.info(f"Starting consensus round: {round_id}")
 
         self._current_round = round_id
-        self._phase = ConsensusPhase.CALCULATING
+        self._set_phase(ConsensusPhase.CALCULATING)
         self._votes = {}
         self._round_start_time = int(time.time())
         self._extension_count = 0
@@ -324,7 +360,7 @@ class ConsensusManager:
 
         # Transition to voting phase
         if self._phase == ConsensusPhase.CALCULATING:
-            self._phase = ConsensusPhase.VOTING
+            self._set_phase(ConsensusPhase.VOTING)
 
         return vote
 
@@ -370,6 +406,13 @@ class ConsensusManager:
 
         self._votes[vote.node_id] = vote
         logger.debug(f"Received vote from node_id={vote.node_id}: merkle_root={vote.merkle_root}")
+
+        # Notify external listeners
+        if self._on_vote_received:
+            try:
+                self._on_vote_received(vote)
+            except Exception as e:
+                logger.debug(f"Vote received callback error: {e}")
 
         return True
 
@@ -429,13 +472,13 @@ class ConsensusManager:
 
         # Determine phase
         if consensus_reached:
-            self._phase = ConsensusPhase.COMPLETE
+            self._set_phase(ConsensusPhase.COMPLETE)
         elif not quorum_met and self._is_voting_window_closed():
             if self._extension_count < 1:
-                self._phase = ConsensusPhase.EXTENDED
+                self._set_phase(ConsensusPhase.EXTENDED)
                 self._extension_count += 1
             else:
-                self._phase = ConsensusPhase.FAILED
+                self._set_phase(ConsensusPhase.FAILED)
 
         result = ConsensusResult(
             round_id=self._current_round or "",

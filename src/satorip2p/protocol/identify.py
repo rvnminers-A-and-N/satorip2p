@@ -382,7 +382,8 @@ class IdentifyProtocol:
             protocols.append("/ipfs/kad/1.0.0")
 
         if self._peers.enable_pubsub:
-            protocols.append("/meshsub/1.1.0")
+            protocols.append("/meshsub/1.2.0")
+            protocols.append("/meshsub/1.1.0")  # Backward compatibility
             protocols.append("/floodsub/1.0.0")
 
         if self._peers.enable_relay:

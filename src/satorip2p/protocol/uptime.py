@@ -897,6 +897,13 @@ class UptimeTracker:
             logger.debug(f"Heartbeat for wrong round: {heartbeat.round_id}")
             return False
 
+        # Deduplicate: check if we already recorded this exact timestamp for this node
+        # This prevents double-counting when GossipSub delivers our own message back
+        existing_timestamps = self._heartbeats[heartbeat.round_id][heartbeat.node_id]
+        if heartbeat.timestamp in existing_timestamps:
+            logger.debug(f"Duplicate heartbeat from {heartbeat.node_id} at {heartbeat.timestamp}, ignoring")
+            return False
+
         # Store heartbeat timestamp
         self._heartbeats[heartbeat.round_id][heartbeat.node_id].append(heartbeat.timestamp)
 

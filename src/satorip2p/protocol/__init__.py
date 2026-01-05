@@ -200,7 +200,10 @@ from .storage import (
     DHT_DEFERRED_REWARDS_PREFIX,
     DHT_ALERT_HISTORY_PREFIX,
     DHT_STORAGE_PREFIX,
+    DHT_ACTIVITY_STATS_PREFIX,
     DEFAULT_STORAGE_DIR,
+    ActivityStats,
+    ActivityStatsStorage,
 )
 from .bandwidth import (
     BandwidthTracker,
@@ -512,7 +515,10 @@ __all__ = [
     "DHT_DEFERRED_REWARDS_PREFIX",
     "DHT_ALERT_HISTORY_PREFIX",
     "DHT_STORAGE_PREFIX",
+    "DHT_ACTIVITY_STATS_PREFIX",
     "DEFAULT_STORAGE_DIR",
+    "ActivityStats",
+    "ActivityStatsStorage",
     # Bandwidth Accounting & QoS
     "BandwidthTracker",
     "QoSManager",

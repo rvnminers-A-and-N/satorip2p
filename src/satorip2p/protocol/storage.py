@@ -866,3 +866,255 @@ class StorageManager:
                 storage._dht = None
                 storage.enable_dht = False
         # Note: 'memory' and 'file' backends are not toggleable - always enabled
+
+
+# ============================================================================
+# ACTIVITY STATS STORAGE
+# ============================================================================
+
+# DHT key prefix for activity stats
+DHT_ACTIVITY_STATS_PREFIX = "satori:activity_stats:"
+
+
+@dataclass
+class ActivityStats:
+    """
+    Activity statistics for a node.
+
+    Stored both locally and in DHT for redundancy and verification.
+    Other peers can verify your claimed stats against what they witnessed.
+    """
+    node_id: str
+    round_id: str
+
+    # Counts by type
+    heartbeats_sent: int = 0
+    heartbeats_received: int = 0
+    predictions: int = 0
+    observations: int = 0
+    consensus_votes: int = 0
+    governance_votes: int = 0
+
+    # Timestamps
+    first_activity: int = 0
+    last_activity: int = 0
+    updated_at: int = 0
+
+    # For DHT verification - witnesses who saw your activity
+    witnesses: List[str] = None
+
+    def __post_init__(self):
+        if self.witnesses is None:
+            self.witnesses = []
+        if self.updated_at == 0:
+            self.updated_at = int(time.time())
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ActivityStats":
+        return cls(**data)
+
+
+class ActivityStatsStorage(RedundantStorage[Dict]):
+    """
+    Specialized storage for activity statistics.
+
+    Keys: {node_id}:{round_id} -> ActivityStats
+
+    Features:
+    - Persists activity counts locally (survives restart)
+    - Syncs to DHT for network-wide availability
+    - Supports verification against peer witnesses
+    - Tracks per-round stats for historical data
+    """
+
+    def __init__(self, peers=None, storage_dir: Path = None, node_id: str = None):
+        super().__init__(
+            namespace="activity_stats",
+            peers=peers,
+            storage_dir=storage_dir,
+        )
+        self.node_id = node_id or "unknown"
+        self._current_round: Optional[str] = None
+
+    def set_node_id(self, node_id: str) -> None:
+        """Set the node ID."""
+        self.node_id = node_id
+
+    def set_current_round(self, round_id: str) -> None:
+        """Set the current round."""
+        self._current_round = round_id
+
+    def _get_key(self, node_id: str = None, round_id: str = None) -> str:
+        """Generate storage key."""
+        nid = node_id or self.node_id
+        rid = round_id or self._current_round or "current"
+        return f"{nid}:{rid}"
+
+    async def get_stats(
+        self,
+        node_id: str = None,
+        round_id: str = None,
+    ) -> Optional[ActivityStats]:
+        """Get activity stats for a node/round."""
+        key = self._get_key(node_id, round_id)
+        data = await self.get(key)
+        if data:
+            return ActivityStats.from_dict(data)
+        return None
+
+    async def get_or_create_stats(
+        self,
+        node_id: str = None,
+        round_id: str = None,
+    ) -> ActivityStats:
+        """Get existing stats or create new ones."""
+        stats = await self.get_stats(node_id, round_id)
+        if stats is None:
+            nid = node_id or self.node_id
+            rid = round_id or self._current_round or "current"
+            stats = ActivityStats(
+                node_id=nid,
+                round_id=rid,
+                first_activity=int(time.time()),
+            )
+            await self.save_stats(stats)
+        return stats
+
+    async def save_stats(self, stats: ActivityStats) -> bool:
+        """Save activity stats."""
+        stats.updated_at = int(time.time())
+        key = self._get_key(stats.node_id, stats.round_id)
+        return await self.put(key, stats.to_dict())
+
+    async def increment_stat(
+        self,
+        stat_name: str,
+        amount: int = 1,
+        node_id: str = None,
+        round_id: str = None,
+    ) -> ActivityStats:
+        """Increment a specific stat counter."""
+        stats = await self.get_or_create_stats(node_id, round_id)
+
+        # Update the stat
+        current_value = getattr(stats, stat_name, 0)
+        setattr(stats, stat_name, current_value + amount)
+        stats.last_activity = int(time.time())
+
+        await self.save_stats(stats)
+        return stats
+
+    async def increment_heartbeat_sent(self) -> ActivityStats:
+        """Convenience method for heartbeat sent."""
+        return await self.increment_stat("heartbeats_sent")
+
+    async def increment_heartbeat_received(self) -> ActivityStats:
+        """Convenience method for heartbeat received."""
+        return await self.increment_stat("heartbeats_received")
+
+    async def increment_prediction(self) -> ActivityStats:
+        """Convenience method for prediction."""
+        return await self.increment_stat("predictions")
+
+    async def increment_observation(self) -> ActivityStats:
+        """Convenience method for observation."""
+        return await self.increment_stat("observations")
+
+    async def increment_consensus_vote(self) -> ActivityStats:
+        """Convenience method for consensus vote."""
+        return await self.increment_stat("consensus_votes")
+
+    async def increment_governance_vote(self) -> ActivityStats:
+        """Convenience method for governance vote."""
+        return await self.increment_stat("governance_votes")
+
+    async def get_all_rounds(self, node_id: str = None) -> List[str]:
+        """Get all round IDs for a node."""
+        nid = node_id or self.node_id
+        prefix = f"{nid}:"
+        all_keys = await self.list_keys()
+        return [k.split(":", 1)[1] for k in all_keys if k.startswith(prefix)]
+
+    async def get_total_stats(self, node_id: str = None) -> Dict[str, int]:
+        """Get total stats across all rounds for a node."""
+        rounds = await self.get_all_rounds(node_id)
+        totals = {
+            "heartbeats_sent": 0,
+            "heartbeats_received": 0,
+            "predictions": 0,
+            "observations": 0,
+            "consensus_votes": 0,
+            "governance_votes": 0,
+        }
+
+        for round_id in rounds:
+            stats = await self.get_stats(node_id, round_id)
+            if stats:
+                for key in totals:
+                    totals[key] += getattr(stats, key, 0)
+
+        return totals
+
+    async def add_witness(
+        self,
+        witness_node_id: str,
+        node_id: str = None,
+        round_id: str = None,
+    ) -> ActivityStats:
+        """Add a witness who verified activity."""
+        stats = await self.get_or_create_stats(node_id, round_id)
+        if witness_node_id not in stats.witnesses:
+            stats.witnesses.append(witness_node_id)
+            await self.save_stats(stats)
+        return stats
+
+    async def verify_against_dht(
+        self,
+        node_id: str = None,
+        round_id: str = None,
+    ) -> Dict[str, Any]:
+        """
+        Verify local stats against DHT consensus.
+
+        Returns dict with:
+        - local: local stats
+        - dht: DHT stats (from network)
+        - match: whether they match
+        - discrepancies: list of mismatched fields
+        """
+        key = self._get_key(node_id, round_id)
+        local_data = await self._memory.get(key) or await self._disk.get(key)
+        dht_data = await self._dht.get(key) if self._dht else None
+
+        result = {
+            "local": None,
+            "dht": None,
+            "match": True,
+            "discrepancies": [],
+        }
+
+        if local_data:
+            result["local"] = json.loads(local_data.decode())
+        if dht_data:
+            result["dht"] = json.loads(dht_data.decode())
+
+        # Check for discrepancies
+        if result["local"] and result["dht"]:
+            for field in ["heartbeats_sent", "heartbeats_received", "predictions",
+                          "observations", "consensus_votes", "governance_votes"]:
+                local_val = result["local"].get(field, 0)
+                dht_val = result["dht"].get(field, 0)
+                # Allow some tolerance (local can be slightly higher due to sync delay)
+                if local_val > dht_val + 10:  # More than 10 difference is suspicious
+                    result["match"] = False
+                    result["discrepancies"].append({
+                        "field": field,
+                        "local": local_val,
+                        "dht": dht_val,
+                        "diff": local_val - dht_val,
+                    })
+
+        return result

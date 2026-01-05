@@ -33,6 +33,15 @@ try:
 except ImportError:
     SIGNING_AVAILABLE = False
 
+# Import activity stats storage for persistence
+try:
+    from .storage import ActivityStatsStorage, ActivityStats
+    ACTIVITY_STORAGE_AVAILABLE = True
+except ImportError:
+    ACTIVITY_STORAGE_AVAILABLE = False
+    ActivityStatsStorage = None
+    ActivityStats = None
+
 logger = logging.getLogger("satorip2p.protocol.uptime")
 
 
@@ -417,6 +426,18 @@ class UptimeTracker:
         self._heartbeats_sent: int = 0
         self._heartbeats_received: int = 0
 
+        # Activity stats storage for persistence (survives restart)
+        self._activity_storage: Optional[ActivityStatsStorage] = None
+        if ACTIVITY_STORAGE_AVAILABLE:
+            from pathlib import Path
+            storage_dir = Path.home() / ".satori" / "storage"
+            self._activity_storage = ActivityStatsStorage(
+                peers=peers,
+                storage_dir=storage_dir,
+                node_id=self.node_id,
+            )
+            logger.info("Activity stats storage initialized")
+
         # Round sync state
         self._known_rounds: Dict[str, int] = {}  # round_id -> start_time
         self._last_round_sync: int = 0
@@ -676,6 +697,11 @@ class UptimeTracker:
         """
         self._current_round = round_id
         self._round_start = round_start
+
+        # Update activity storage with current round
+        if self._activity_storage:
+            self._activity_storage.set_current_round(round_id)
+
         logger.info(f"Uptime tracking started for round: {round_id}")
 
     async def send_heartbeat_async(self, roles: Optional[List[str]] = None) -> Optional[Heartbeat]:
@@ -742,6 +768,13 @@ class UptimeTracker:
         self._last_heartbeat = now
         self._last_status_message = heartbeat.status_message  # Store for UI display
         self._heartbeats_sent += 1
+
+        # Persist to storage (survives restart)
+        if self._activity_storage:
+            try:
+                await self._activity_storage.increment_heartbeat_sent()
+            except Exception as e:
+                logger.debug(f"Failed to persist heartbeat sent stat: {e}")
 
         # Notify external listeners that we sent a heartbeat
         if self._on_heartbeat_sent:
@@ -914,6 +947,15 @@ class UptimeTracker:
         # Increment received counter (for heartbeats from others)
         if heartbeat.node_id != self.node_id:
             self._heartbeats_received += 1
+
+            # Persist to storage (spawn async task)
+            if self._activity_storage and self.peers:
+                try:
+                    self.peers.spawn_background_task(
+                        self._activity_storage.increment_heartbeat_received
+                    )
+                except Exception as e:
+                    logger.debug(f"Failed to spawn heartbeat received persist task: {e}")
 
         # Notify external listeners
         if self._on_heartbeat_received:
@@ -1195,6 +1237,135 @@ class UptimeTracker:
         if round_id in self._heartbeats:
             del self._heartbeats[round_id]
             logger.debug(f"Cleared heartbeat data for round: {round_id}")
+
+    # ========================================================================
+    # PERSISTENT STATS METHODS
+    # ========================================================================
+
+    async def load_persisted_stats(self) -> Dict[str, int]:
+        """
+        Load persisted activity stats from storage.
+
+        Call this on startup to restore counts after restart.
+
+        Returns:
+            Dict with heartbeats_sent, heartbeats_received, etc.
+        """
+        if not self._activity_storage:
+            return {
+                "heartbeats_sent": self._heartbeats_sent,
+                "heartbeats_received": self._heartbeats_received,
+                "predictions": 0,
+                "observations": 0,
+                "consensus_votes": 0,
+                "governance_votes": 0,
+            }
+
+        try:
+            totals = await self._activity_storage.get_total_stats()
+
+            # Optionally sync in-memory counters to match storage
+            # (useful if we want counters to reflect historical totals)
+            # self._heartbeats_sent = totals.get("heartbeats_sent", 0)
+            # self._heartbeats_received = totals.get("heartbeats_received", 0)
+
+            logger.info(f"Loaded persisted stats: {totals}")
+            return totals
+        except Exception as e:
+            logger.warning(f"Failed to load persisted stats: {e}")
+            return {
+                "heartbeats_sent": self._heartbeats_sent,
+                "heartbeats_received": self._heartbeats_received,
+                "predictions": 0,
+                "observations": 0,
+                "consensus_votes": 0,
+                "governance_votes": 0,
+            }
+
+    async def get_persisted_stats(
+        self,
+        round_id: str = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get persisted activity stats for a specific round or current round.
+
+        Args:
+            round_id: Optional round to get stats for (defaults to current)
+
+        Returns:
+            Dict with all activity stats, or None if not found
+        """
+        if not self._activity_storage:
+            return None
+
+        try:
+            stats = await self._activity_storage.get_stats(round_id=round_id)
+            if stats:
+                return stats.to_dict()
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to get persisted stats: {e}")
+            return None
+
+    async def sync_stats_to_dht(self) -> int:
+        """
+        Sync local activity stats to DHT for network redundancy.
+
+        Returns:
+            Number of keys synced
+        """
+        if not self._activity_storage:
+            return 0
+
+        try:
+            return await self._activity_storage.sync_to_dht()
+        except Exception as e:
+            logger.warning(f"Failed to sync stats to DHT: {e}")
+            return 0
+
+    async def recover_stats_from_dht(self, keys: List[str] = None) -> int:
+        """
+        Recover activity stats from DHT (after restart or data loss).
+
+        Args:
+            keys: Optional specific keys to recover
+
+        Returns:
+            Number of keys recovered
+        """
+        if not self._activity_storage:
+            return 0
+
+        try:
+            if keys:
+                return await self._activity_storage.recover_from_dht(keys)
+            else:
+                # Recover all our stats
+                all_keys = [f"{self.node_id}:{self._current_round or 'current'}"]
+                return await self._activity_storage.recover_from_dht(all_keys)
+        except Exception as e:
+            logger.warning(f"Failed to recover stats from DHT: {e}")
+            return 0
+
+    async def verify_stats_integrity(self) -> Dict[str, Any]:
+        """
+        Verify local stats against DHT consensus.
+
+        Returns:
+            Dict with verification results including any discrepancies
+        """
+        if not self._activity_storage:
+            return {"match": True, "discrepancies": [], "error": "Storage not available"}
+
+        try:
+            return await self._activity_storage.verify_against_dht()
+        except Exception as e:
+            logger.warning(f"Failed to verify stats integrity: {e}")
+            return {"match": False, "discrepancies": [], "error": str(e)}
+
+    def get_activity_storage(self) -> Optional[ActivityStatsStorage]:
+        """Get the activity stats storage instance for external access."""
+        return self._activity_storage
 
 
 # ============================================================================

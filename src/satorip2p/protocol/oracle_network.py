@@ -144,6 +144,9 @@ class OracleNetwork:
         self._observation_cache: Dict[str, List[Observation]] = {}  # stream_id -> recent observations
         self._started = False
 
+        # External callback for bridge integration (set by p2p_bridge)
+        self.on_observation_received: Optional[Callable[[Observation], None]] = None
+
     @property
     def evrmore_address(self) -> str:
         """Get our Evrmore address."""
@@ -370,13 +373,20 @@ class OracleNetwork:
             if len(self._observation_cache[stream_id]) > self.MAX_CACHE_SIZE:
                 self._observation_cache[stream_id] = self._observation_cache[stream_id][-self.MAX_CACHE_SIZE:]
 
-            # Notify callbacks
+            # Notify stream-specific callbacks
             if stream_id in self._subscribed_streams:
                 for callback in self._subscribed_streams[stream_id]:
                     try:
                         callback(observation)
                     except Exception as e:
                         logger.debug(f"Observation callback error: {e}")
+
+            # Notify global callback (for p2p_bridge integration)
+            if self.on_observation_received:
+                try:
+                    self.on_observation_received(observation)
+                except Exception as e:
+                    logger.debug(f"Global observation callback error: {e}")
 
             logger.debug(
                 f"Received observation for stream_id={stream_id} "

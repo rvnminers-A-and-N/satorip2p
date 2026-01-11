@@ -48,6 +48,8 @@ import json
 import hashlib
 from typing import Dict, List, Optional, Set, Callable, TYPE_CHECKING, Any
 from dataclasses import dataclass, field, asdict
+
+from satorip2p.signing import verify_message
 from enum import Enum
 from datetime import datetime, timezone
 
@@ -304,6 +306,65 @@ class GovernanceProtocol:
         self._total_voting_power_cache: float = 0.0
         self._voting_power_cache_time: int = 0
 
+        # External dependencies (set via setters)
+        self._uptime_tracker = None  # UptimeTracker for uptime-based voting power
+        self._wallet = None  # Wallet for stake lookup
+        self._activity_storage = None  # ActivityStatsStorage for tracking participation
+
+    def set_uptime_tracker(self, uptime_tracker) -> None:
+        """
+        Set the uptime tracker for uptime-based voting power calculation.
+
+        Args:
+            uptime_tracker: UptimeTracker instance
+        """
+        self._uptime_tracker = uptime_tracker
+        logger.debug("Governance: uptime tracker connected")
+
+    def set_wallet(self, wallet) -> None:
+        """
+        Set the wallet for stake lookup.
+
+        Args:
+            wallet: Wallet instance with getBalances() method
+        """
+        self._wallet = wallet
+        logger.debug("Governance: wallet connected")
+
+    def set_activity_storage(self, activity_storage) -> None:
+        """
+        Set the activity storage for tracking governance participation.
+
+        Args:
+            activity_storage: ActivityStatsStorage instance
+        """
+        self._activity_storage = activity_storage
+        logger.debug("Governance: activity storage connected")
+
+    async def _track_governance_vote(self) -> None:
+        """Track a governance vote in activity stats."""
+        if self._activity_storage:
+            try:
+                await self._activity_storage.increment_governance_vote()
+            except Exception as e:
+                logger.debug(f"Failed to track governance vote: {e}")
+
+    async def _track_proposal_created(self) -> None:
+        """Track a proposal creation in activity stats."""
+        if self._activity_storage:
+            try:
+                await self._activity_storage.increment_proposal_created()
+            except Exception as e:
+                logger.debug(f"Failed to track proposal creation: {e}")
+
+    async def _track_comment_posted(self) -> None:
+        """Track a comment in activity stats."""
+        if self._activity_storage:
+            try:
+                await self._activity_storage.increment_comment_posted()
+            except Exception as e:
+                logger.debug(f"Failed to track comment: {e}")
+
     async def start(self) -> None:
         """Start the governance protocol."""
         if self._started:
@@ -415,6 +476,10 @@ class GovernanceProtocol:
                 json.dumps(proposal.to_dict()).encode()
             )
             logger.info(f"Created proposal: {proposal_id} - {title}")
+
+            # Track in activity stats
+            await self._track_proposal_created()
+
             return proposal
         except Exception as e:
             logger.error(f"Failed to broadcast proposal: {e}")
@@ -521,6 +586,10 @@ class GovernanceProtocol:
                 json.dumps(vote.to_dict()).encode()
             )
             logger.info(f"Cast vote on {proposal_id}: {choice.value}")
+
+            # Track in activity stats
+            await self._track_governance_vote()
+
             return True
         except Exception as e:
             logger.error(f"Failed to broadcast vote: {e}")
@@ -578,6 +647,9 @@ class GovernanceProtocol:
         # Add to proposal
         proposal.comments.append(comment)
 
+        # Track in activity stats
+        await self._track_comment_posted()
+
         logger.info(f"Added {'status update' if is_status_update else 'comment'} to {proposal_id}")
         return comment
 
@@ -594,13 +666,13 @@ class GovernanceProtocol:
 
     async def mark_executed(self, proposal_id: str) -> bool:
         """
-        Mark a passed proposal as executed (signers only).
+        Mark a passed proposal as executed and apply changes (signers only).
 
         Args:
             proposal_id: Proposal to mark
 
         Returns:
-            True if marked successfully
+            True if executed successfully
         """
         if not self._is_signer():
             logger.warning("Only signers can mark proposals as executed")
@@ -614,12 +686,232 @@ class GovernanceProtocol:
             logger.warning("Can only mark passed proposals as executed")
             return False
 
-        proposal.status = ProposalStatus.EXECUTED
-        proposal.executed_by = self._peers.evrmore_address or ""
-        proposal.executed_at = int(time.time())
+        # Actually execute the proposal based on its type
+        execution_result = await self._execute_proposal(proposal)
 
-        logger.info(f"Marked proposal {proposal_id} as executed")
-        return True
+        if execution_result.get("success"):
+            proposal.status = ProposalStatus.EXECUTED
+            proposal.executed_by = self._peers.evrmore_address or ""
+            proposal.executed_at = int(time.time())
+            proposal.execution_data = execution_result
+            logger.info(f"Executed proposal {proposal_id}: {execution_result.get('message', 'OK')}")
+            return True
+        else:
+            logger.error(f"Failed to execute proposal {proposal_id}: {execution_result.get('error')}")
+            proposal.execution_data = execution_result
+            return False
+
+    async def _execute_proposal(self, proposal: Proposal) -> Dict[str, Any]:
+        """
+        Actually execute a passed proposal by applying its changes.
+
+        Args:
+            proposal: The proposal to execute
+
+        Returns:
+            Dict with success status and details
+        """
+        try:
+            if proposal.proposal_type == ProposalType.PARAMETER_CHANGE:
+                return await self._execute_parameter_change(proposal)
+            elif proposal.proposal_type == ProposalType.FEATURE_TOGGLE:
+                return await self._execute_feature_toggle(proposal)
+            elif proposal.proposal_type == ProposalType.SIGNER_CHANGE:
+                return await self._execute_signer_change(proposal)
+            elif proposal.proposal_type == ProposalType.TREASURY_SPEND:
+                return await self._execute_treasury_spend(proposal)
+            elif proposal.proposal_type == ProposalType.PROTOCOL_UPGRADE:
+                return await self._execute_protocol_upgrade(proposal)
+            elif proposal.proposal_type == ProposalType.COMMUNITY:
+                # Community proposals are informational only
+                return {"success": True, "message": "Community proposal recorded"}
+            else:
+                return {"success": False, "error": f"Unknown proposal type: {proposal.proposal_type}"}
+        except Exception as e:
+            logger.error(f"Error executing proposal: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _execute_parameter_change(self, proposal: Proposal) -> Dict[str, Any]:
+        """Execute a parameter change proposal."""
+        changes = proposal.changes
+        applied_changes = []
+
+        for param_name, new_value in changes.items():
+            # Store the parameter change in our config
+            old_value = self._config.get(param_name)
+            self._config[param_name] = new_value
+            applied_changes.append({
+                "parameter": param_name,
+                "old_value": old_value,
+                "new_value": new_value,
+            })
+            logger.info(f"Parameter changed: {param_name} = {new_value} (was {old_value})")
+
+        # Persist config changes
+        await self._persist_config()
+
+        return {
+            "success": True,
+            "message": f"Applied {len(applied_changes)} parameter changes",
+            "changes": applied_changes,
+        }
+
+    async def _execute_feature_toggle(self, proposal: Proposal) -> Dict[str, Any]:
+        """Execute a feature toggle proposal."""
+        changes = proposal.changes
+        feature_name = changes.get("feature")
+        enabled = changes.get("enabled", False)
+
+        if not feature_name:
+            return {"success": False, "error": "No feature specified"}
+
+        # Store feature state
+        if "_feature_flags" not in self._config:
+            self._config["_feature_flags"] = {}
+
+        old_state = self._config["_feature_flags"].get(feature_name, False)
+        self._config["_feature_flags"][feature_name] = enabled
+
+        logger.info(f"Feature toggle: {feature_name} = {enabled} (was {old_state})")
+
+        # Persist config changes
+        await self._persist_config()
+
+        return {
+            "success": True,
+            "message": f"Feature '{feature_name}' {'enabled' if enabled else 'disabled'}",
+            "feature": feature_name,
+            "old_state": old_state,
+            "new_state": enabled,
+        }
+
+    async def _execute_signer_change(self, proposal: Proposal) -> Dict[str, Any]:
+        """Execute a signer change proposal (add/remove signers)."""
+        changes = proposal.changes
+        action = changes.get("action")  # "add" or "remove"
+        address = changes.get("address")
+        pubkey = changes.get("pubkey", "")
+
+        if not action or not address:
+            return {"success": False, "error": "Missing action or address"}
+
+        # Get current signers from config
+        if "_signers" not in self._config:
+            self._config["_signers"] = []
+
+        current_signers = self._config["_signers"]
+
+        if action == "add":
+            # Add new signer
+            if any(s.get("address") == address for s in current_signers):
+                return {"success": False, "error": "Signer already exists"}
+            current_signers.append({"address": address, "pubkey": pubkey})
+            logger.info(f"Added signer: {address}")
+        elif action == "remove":
+            # Remove signer
+            original_count = len(current_signers)
+            current_signers = [s for s in current_signers if s.get("address") != address]
+            if len(current_signers) == original_count:
+                return {"success": False, "error": "Signer not found"}
+            self._config["_signers"] = current_signers
+            logger.info(f"Removed signer: {address}")
+        else:
+            return {"success": False, "error": f"Unknown action: {action}"}
+
+        # Persist config changes
+        await self._persist_config()
+
+        return {
+            "success": True,
+            "message": f"Signer {action}ed: {address}",
+            "action": action,
+            "address": address,
+            "signer_count": len(current_signers),
+        }
+
+    async def _execute_treasury_spend(self, proposal: Proposal) -> Dict[str, Any]:
+        """
+        Execute a treasury spend proposal.
+        Note: Actual fund transfer requires multi-sig signing by signers.
+        This marks the spend as approved and ready for signing.
+        """
+        changes = proposal.changes
+        recipient = changes.get("recipient")
+        amount = changes.get("amount", 0)
+        memo = changes.get("memo", "")
+
+        if not recipient or amount <= 0:
+            return {"success": False, "error": "Invalid recipient or amount"}
+
+        # Queue the spend for multi-sig signing
+        spend_request = {
+            "proposal_id": proposal.proposal_id,
+            "recipient": recipient,
+            "amount": amount,
+            "memo": memo,
+            "approved_at": int(time.time()),
+            "status": "pending_signatures",
+        }
+
+        if "_pending_treasury_spends" not in self._config:
+            self._config["_pending_treasury_spends"] = []
+        self._config["_pending_treasury_spends"].append(spend_request)
+
+        logger.info(f"Treasury spend approved: {amount} to {recipient}")
+
+        # Persist config changes
+        await self._persist_config()
+
+        return {
+            "success": True,
+            "message": f"Treasury spend of {amount} to {recipient} queued for signing",
+            "recipient": recipient,
+            "amount": amount,
+            "status": "pending_signatures",
+        }
+
+    async def _execute_protocol_upgrade(self, proposal: Proposal) -> Dict[str, Any]:
+        """
+        Execute a protocol upgrade proposal.
+        Records the upgrade decision - actual upgrade happens out-of-band.
+        """
+        changes = proposal.changes
+        target_version = changes.get("target_version")
+        upgrade_notes = changes.get("notes", "")
+
+        if not target_version:
+            return {"success": False, "error": "No target version specified"}
+
+        # Record the approved upgrade
+        if "_approved_upgrades" not in self._config:
+            self._config["_approved_upgrades"] = []
+
+        upgrade_record = {
+            "proposal_id": proposal.proposal_id,
+            "target_version": target_version,
+            "notes": upgrade_notes,
+            "approved_at": int(time.time()),
+        }
+        self._config["_approved_upgrades"].append(upgrade_record)
+
+        logger.info(f"Protocol upgrade to v{target_version} approved")
+
+        # Persist config changes
+        await self._persist_config()
+
+        return {
+            "success": True,
+            "message": f"Protocol upgrade to v{target_version} approved and recorded",
+            "target_version": target_version,
+        }
+
+    async def _persist_config(self):
+        """Persist governance config changes to storage."""
+        try:
+            if hasattr(self, '_storage') and self._storage:
+                await self._storage.save_governance_config(self._config)
+        except Exception as e:
+            logger.warning(f"Failed to persist governance config: {e}")
 
     async def pin_proposal(self, proposal_id: str, pinned: bool = True) -> bool:
         """
@@ -783,12 +1075,46 @@ class GovernanceProtocol:
 
     def _get_my_stake(self) -> float:
         """Get our staked SATORI amount."""
-        # TODO: Integrate with staking system
-        return 50.0  # Default minimum for now
+        # Try to get real balance from wallet
+        if self._wallet is not None:
+            try:
+                # Try getBalances() method (satorilib wallet)
+                if hasattr(self._wallet, 'getBalances'):
+                    balances = self._wallet.getBalances()
+                    if balances and 'SATORI' in balances:
+                        return float(balances['SATORI'])
+                # Try get_balance() method (python-evrmorelib wallet)
+                elif hasattr(self._wallet, 'get_balance'):
+                    balance = self._wallet.get_balance('SATORI')
+                    if balance is not None:
+                        return float(balance)
+                # Try balance property
+                elif hasattr(self._wallet, 'balance'):
+                    return float(self._wallet.balance)
+            except Exception as e:
+                logger.debug(f"Failed to get stake from wallet: {e}")
+
+        # Fallback to default minimum
+        return 50.0
 
     def _get_uptime_days(self) -> int:
         """Get our uptime streak in days."""
-        # TODO: Integrate with uptime tracker
+        if self._uptime_tracker is None:
+            return 0
+
+        try:
+            # Get our node_id (evrmore address)
+            node_id = getattr(self._uptime_tracker, 'node_id', None)
+            if not node_id and self._peers:
+                node_id = getattr(self._peers, 'evrmore_address', None)
+
+            if node_id:
+                # Use the uptime tracker's streak calculation
+                return self._uptime_tracker.get_uptime_streak_days(node_id)
+
+        except Exception as e:
+            logger.debug(f"Failed to get uptime days: {e}")
+
         return 0
 
     def _is_signer(self) -> bool:
@@ -812,15 +1138,83 @@ class GovernanceProtocol:
         return power
 
     def _get_total_voting_power(self) -> float:
-        """Get total voting power in network (cached)."""
+        """
+        Get total voting power in network (cached).
+
+        Calculates voting power from:
+        1. Known node stakes from heartbeat data (via uptime tracker)
+        2. Known peers from identify protocol (fallback to minimum stake)
+
+        Returns:
+            Total voting power across all known active nodes
+        """
         now = int(time.time())
-        if now - self._voting_power_cache_time < 3600:  # Cache for 1 hour
+
+        # Return cached value if fresh (cache for 5 minutes)
+        if now - self._voting_power_cache_time < 300:
             return self._total_voting_power_cache
 
-        # TODO: Calculate from actual network stake
-        # For now, estimate based on known nodes
-        self._total_voting_power_cache = 10000.0  # Placeholder
+        total_power = 0.0
+        known_nodes: Dict[str, float] = {}  # node_id -> stake
+
+        # Method 1: Get stakes from uptime tracker heartbeat data
+        if self._uptime_tracker is not None:
+            try:
+                if hasattr(self._uptime_tracker, 'get_all_node_stakes'):
+                    node_stakes = self._uptime_tracker.get_all_node_stakes()
+                    known_nodes.update(node_stakes)
+            except Exception as e:
+                logger.debug(f"Failed to get node stakes from uptime tracker: {e}")
+
+        # Method 2: Add known peers from identify protocol (minimum stake if not known)
+        if self._peers is not None:
+            try:
+                if hasattr(self._peers, 'get_known_peer_identities'):
+                    peer_identities = self._peers.get_known_peer_identities()
+                    if peer_identities:
+                        for peer_id, identity in peer_identities.items():
+                            # Use evrmore_address as node_id if available
+                            node_id = identity.get('evrmore_address') or peer_id
+                            if node_id not in known_nodes:
+                                # Assume minimum stake for peers without heartbeat data
+                                known_nodes[node_id] = MIN_STAKE_TO_VOTE
+            except Exception as e:
+                logger.debug(f"Failed to get peer identities: {e}")
+
+        # Calculate total voting power for all known nodes
+        for node_id, stake in known_nodes.items():
+            if stake >= MIN_STAKE_TO_VOTE:
+                # Calculate voting power with bonuses
+                power = stake * STAKE_WEIGHT
+
+                # Uptime bonus (check if node has 90+ day streak)
+                if self._uptime_tracker is not None:
+                    try:
+                        uptime_days = self._uptime_tracker.get_uptime_streak_days(node_id)
+                        if uptime_days >= 90:
+                            power *= (1 + UPTIME_BONUS_90_DAYS)
+                    except Exception:
+                        pass
+
+                # Signer bonus
+                try:
+                    from .signer import is_authorized_signer
+                    if is_authorized_signer(node_id):
+                        power *= (1 + SIGNER_BONUS)
+                except Exception:
+                    pass
+
+                total_power += power
+
+        # Ensure minimum voting power (at least our own)
+        if total_power < MIN_STAKE_TO_VOTE:
+            total_power = self._calculate_voting_power(self._get_my_stake())
+
+        # Cache the result
+        self._total_voting_power_cache = total_power
         self._voting_power_cache_time = now
+
+        logger.debug(f"Total network voting power: {total_power:.2f} ({len(known_nodes)} nodes)")
         return self._total_voting_power_cache
 
     def _get_quorum_requirement(self, proposal_type: ProposalType) -> float:
@@ -919,6 +1313,40 @@ class GovernanceProtocol:
         except Exception as e:
             logger.warning(f"Error handling proposal: {e}")
 
+    def _verify_vote_signature(self, vote: Vote) -> bool:
+        """
+        Verify that a vote's signature is valid.
+
+        The vote must be signed by the voter_address using the signing message
+        format: "vote:{proposal_id}:{choice}:{timestamp}"
+
+        Args:
+            vote: The Vote object to verify
+
+        Returns:
+            True if signature is valid, False otherwise
+        """
+        if not vote.signature:
+            logger.warning(f"Vote from {vote.voter_address} has no signature")
+            return False
+
+        try:
+            message = vote.get_signing_message()
+            is_valid = verify_message(
+                message=message,
+                signature=vote.signature,
+                address=vote.voter_address,
+            )
+            if not is_valid:
+                logger.warning(
+                    f"Invalid vote signature from {vote.voter_address} "
+                    f"on proposal {vote.proposal_id}"
+                )
+            return is_valid
+        except Exception as e:
+            logger.warning(f"Vote signature verification failed: {e}")
+            return False
+
     def _on_vote(self, topic: str, data: Any) -> None:
         """Handle incoming vote."""
         try:
@@ -935,7 +1363,12 @@ class GovernanceProtocol:
             if not proposal:
                 return
 
-            # TODO: Verify vote signature
+            # Verify vote signature - reject votes with invalid signatures
+            if not self._verify_vote_signature(vote):
+                logger.warning(
+                    f"Rejected vote from {vote.voter_address}: invalid signature"
+                )
+                return
 
             proposal.votes[vote.voter_address] = vote
             logger.debug(f"Received vote on {vote.proposal_id} from {vote.voter_address}")

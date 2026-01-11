@@ -445,6 +445,11 @@ class UptimeTracker:
         # Uptime streak tracking: {node_id: NodeStreakRecord}
         self._uptime_streaks: Dict[str, NodeStreakRecord] = {}
 
+        # Node stakes tracking: {node_id: stake_amount}
+        # Updated from heartbeat data for governance voting power calculation
+        self._node_stakes: Dict[str, float] = {}
+        self._node_stakes_updated: int = 0  # Last update timestamp
+
         # Callbacks for external listeners (e.g., WebSocket bridge)
         self._on_heartbeat_received: Optional[Callable[[Heartbeat], None]] = None
         self._on_heartbeat_sent: Optional[Callable[[Heartbeat], None]] = None
@@ -625,6 +630,15 @@ class UptimeTracker:
             self.start_round(round_id, round_start)
             logger.info(f"Started round {round_id} (UTC midnight aligned)")
 
+        # Try to recover stats from DHT if local storage is empty (after restart/data loss)
+        if self._activity_storage:
+            try:
+                recovered = await self.recover_stats_from_dht()
+                if recovered > 0:
+                    logger.info(f"Recovered {recovered} activity stats entries from DHT")
+            except Exception as e:
+                logger.debug(f"DHT stats recovery skipped: {e}")
+
         # Broadcast our round to help other nodes sync (delay to ensure pubsub is ready)
         import trio
         await trio.sleep(1.0)  # Wait for pubsub connections to stabilize
@@ -645,12 +659,21 @@ class UptimeTracker:
 
         This should be called as a background task after start().
         Sends heartbeats every HEARTBEAT_INTERVAL seconds.
+        Also handles periodic DHT sync and integrity verification.
         """
         import trio
+
+        # Track last sync/verification times
+        last_dht_sync = 0
+        last_integrity_check = 0
+        DHT_SYNC_INTERVAL = 300  # 5 minutes
+        INTEGRITY_CHECK_INTERVAL = 900  # 15 minutes
 
         logger.info("Heartbeat loop started")
         while self._is_heartbeating:
             try:
+                now = int(time.time())
+
                 # Check for round change (new day at midnight UTC)
                 current_round_id, current_round_start = get_current_round()
                 if self._current_round != current_round_id:
@@ -661,6 +684,14 @@ class UptimeTracker:
                     self._heartbeats_received = 0
                     # Broadcast round sync to help other nodes
                     await self._broadcast_round_sync()
+                    # Sync stats to DHT before round change (preserve old round data)
+                    if self._activity_storage:
+                        try:
+                            synced = await self.sync_stats_to_dht()
+                            if synced > 0:
+                                logger.info(f"Synced {synced} stats entries to DHT on round change")
+                        except Exception as e:
+                            logger.debug(f"DHT sync on round change failed: {e}")
 
                 # Send heartbeat (async version)
                 heartbeat = await self.send_heartbeat_async()
@@ -670,9 +701,33 @@ class UptimeTracker:
                     logger.debug("Heartbeat not sent (no active round)")
 
                 # Periodically broadcast round sync (every ROUND_SYNC_INTERVAL)
-                now = int(time.time())
                 if now - self._last_round_sync >= ROUND_SYNC_INTERVAL:
                     await self._broadcast_round_sync()
+
+                # Periodically sync stats to DHT (every 5 minutes)
+                if self._activity_storage and now - last_dht_sync >= DHT_SYNC_INTERVAL:
+                    try:
+                        synced = await self.sync_stats_to_dht()
+                        if synced > 0:
+                            logger.debug(f"Periodic DHT sync: {synced} entries synced")
+                        last_dht_sync = now
+                    except Exception as e:
+                        logger.debug(f"Periodic DHT sync failed: {e}")
+
+                # Periodically verify stats integrity (every 15 minutes)
+                if self._activity_storage and now - last_integrity_check >= INTEGRITY_CHECK_INTERVAL:
+                    try:
+                        result = await self.verify_stats_integrity()
+                        if not result.get("match", True):
+                            discrepancies = result.get("discrepancies", [])
+                            logger.warning(f"Stats integrity check: {len(discrepancies)} discrepancies found")
+                            for d in discrepancies:
+                                logger.warning(f"  - {d['field']}: local={d['local']}, dht={d['dht']}, diff={d['diff']}")
+                        else:
+                            logger.debug("Stats integrity check: OK")
+                        last_integrity_check = now
+                    except Exception as e:
+                        logger.debug(f"Stats integrity check failed: {e}")
 
             except Exception as e:
                 logger.warning(f"Failed to send heartbeat: {e}")
@@ -683,8 +738,18 @@ class UptimeTracker:
         logger.info("Heartbeat loop stopped")
 
     async def stop(self) -> None:
-        """Stop heartbeat sending."""
+        """Stop heartbeat sending and sync final stats to DHT."""
         self._is_heartbeating = False
+
+        # Final sync to DHT before shutdown (preserve stats)
+        if self._activity_storage:
+            try:
+                synced = await self.sync_stats_to_dht()
+                if synced > 0:
+                    logger.info(f"Final DHT sync on shutdown: {synced} entries synced")
+            except Exception as e:
+                logger.debug(f"Final DHT sync failed: {e}")
+
         logger.info("Uptime tracker stopped")
 
     def start_round(self, round_id: str, round_start: int) -> None:
@@ -944,6 +1009,11 @@ class UptimeTracker:
         for role in heartbeat.roles:
             self._node_roles[heartbeat.node_id].add(role)
 
+        # Store node stake (for governance voting power calculation)
+        if heartbeat.stake > 0:
+            self._node_stakes[heartbeat.node_id] = heartbeat.stake
+            self._node_stakes_updated = int(time.time())
+
         # Increment received counter (for heartbeats from others)
         if heartbeat.node_id != self.node_id:
             self._heartbeats_received += 1
@@ -1128,6 +1198,18 @@ class UptimeTracker:
             return self._uptime_streaks[node_id].streak_days
         return 0
 
+    def get_uptime_streak_days(self, node_id: str) -> int:
+        """
+        Alias for get_uptime_streak() - used by GovernanceProtocol.
+
+        Args:
+            node_id: Node to check
+
+        Returns:
+            Number of consecutive days with ≥95% uptime
+        """
+        return self.get_uptime_streak(node_id)
+
     def get_uptime_streak_record(self, node_id: str) -> Optional[NodeStreakRecord]:
         """
         Get full uptime streak record for a node.
@@ -1139,6 +1221,47 @@ class UptimeTracker:
             NodeStreakRecord or None if no record exists
         """
         return self._uptime_streaks.get(node_id)
+
+    def get_node_stake(self, node_id: str) -> float:
+        """
+        Get stake amount for a node (from heartbeat data).
+
+        Args:
+            node_id: Node to check
+
+        Returns:
+            Stake amount, or 0.0 if unknown
+        """
+        return self._node_stakes.get(node_id, 0.0)
+
+    def get_all_node_stakes(self) -> Dict[str, float]:
+        """
+        Get all known node stakes.
+
+        Returns:
+            Dict mapping node_id to stake amount
+        """
+        return dict(self._node_stakes)
+
+    def get_total_network_stake(self) -> float:
+        """
+        Calculate total stake across all known active nodes.
+
+        Used by GovernanceProtocol for voting power calculations.
+
+        Returns:
+            Sum of all known node stakes
+        """
+        return sum(self._node_stakes.values())
+
+    def get_active_node_count(self) -> int:
+        """
+        Get count of nodes that have sent heartbeats recently.
+
+        Returns:
+            Number of active nodes with known stakes
+        """
+        return len(self._node_stakes)
 
     def update_uptime_streak(self, node_id: str, round_id: str, is_qualified: bool) -> int:
         """

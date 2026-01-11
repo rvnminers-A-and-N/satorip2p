@@ -74,10 +74,13 @@ _TREASURY_MULTISIG_ADDRESS_CACHE: Optional[str] = None
 # Timing
 SIGNATURE_COLLECTION_TIMEOUT = 300  # 5 minutes to collect signatures
 SIGNATURE_RETRY_INTERVAL = 30       # Retry every 30 seconds
+SIGNER_HEARTBEAT_INTERVAL = 60      # Signers announce online status every 60 seconds
+SIGNER_OFFLINE_THRESHOLD = 180      # Consider offline after 3 missed heartbeats (180s)
 
 # PubSub topics
 SIGNATURE_REQUEST_TOPIC = "satori/signer/requests"
 SIGNATURE_RESPONSE_TOPIC = "satori/signer/responses"
+SIGNER_HEARTBEAT_TOPIC = "satori/signer/heartbeat"
 
 
 # ============================================================================
@@ -179,6 +182,294 @@ class SigningResult:
             'distribution_tx_hash': self.distribution_tx_hash,
             'timestamp': self.timestamp,
         }
+
+
+@dataclass
+class SignerHeartbeat:
+    """Heartbeat message from a signer announcing online status."""
+    signer_address: str               # Evrmore address of the signer
+    peer_id: str                      # libp2p peer ID
+    timestamp: int                    # Unix timestamp
+    signature: str = ""               # Signed by signer's private key
+    current_round: str = ""           # Round currently being signed (if any)
+    signatures_pending: int = 0       # Number of pending signature requests
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "SignerHeartbeat":
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+    def get_signing_message(self) -> str:
+        """Get message for signing."""
+        return f"signer_heartbeat:{self.signer_address}:{self.timestamp}"
+
+
+@dataclass
+class SignerStatus:
+    """Online status of a signer."""
+    address: str
+    peer_id: str
+    online: bool
+    last_seen: int                    # Unix timestamp of last heartbeat
+    current_round: str = ""
+    signatures_pending: int = 0
+    response_time_ms: int = 0         # Average response time (for future use)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+class SignerStatusTracker:
+    """
+    Tracks online status of all authorized signers.
+
+    Uses heartbeat messages to determine which signers are online
+    and available for signing operations.
+    """
+
+    def __init__(self, peers: Optional["Peers"] = None):
+        """
+        Initialize the status tracker.
+
+        Args:
+            peers: Peers instance for P2P communication
+        """
+        self._peers = peers
+        self._signer_status: Dict[str, SignerStatus] = {}
+        self._heartbeat_history: Dict[str, List[int]] = {}  # For response time tracking
+        self._started = False
+
+        # Initialize status for all authorized signers
+        for signer_addr in AUTHORIZED_SIGNERS:
+            self._signer_status[signer_addr] = SignerStatus(
+                address=signer_addr,
+                peer_id="",
+                online=False,
+                last_seen=0,
+            )
+
+    async def start(self) -> None:
+        """Start the status tracker."""
+        if self._started:
+            return
+
+        if self._peers:
+            await self._peers.subscribe_async(
+                SIGNER_HEARTBEAT_TOPIC,
+                self._on_heartbeat
+            )
+
+        self._started = True
+        logger.info("Signer status tracker started")
+
+    async def stop(self) -> None:
+        """Stop the status tracker."""
+        if not self._started:
+            return
+
+        if self._peers:
+            self._peers.unsubscribe(SIGNER_HEARTBEAT_TOPIC)
+
+        self._started = False
+        logger.info("Signer status tracker stopped")
+
+    def _on_heartbeat(self, topic: str, data: Any) -> None:
+        """Handle incoming heartbeat."""
+        try:
+            import json
+            if isinstance(data, bytes):
+                heartbeat_data = json.loads(data.decode())
+            elif isinstance(data, dict):
+                heartbeat_data = data
+            else:
+                return
+
+            heartbeat = SignerHeartbeat.from_dict(heartbeat_data)
+
+            # Verify signer is authorized
+            if heartbeat.signer_address not in AUTHORIZED_SIGNERS:
+                logger.debug(f"Heartbeat from unauthorized signer: {heartbeat.signer_address}")
+                return
+
+            # Verify signature (optional but recommended)
+            if heartbeat.signature and SIGNING_AVAILABLE:
+                try:
+                    is_valid = verify_message(
+                        message=heartbeat.get_signing_message(),
+                        signature=heartbeat.signature,
+                        address=heartbeat.signer_address,
+                    )
+                    if not is_valid:
+                        logger.warning(f"Invalid heartbeat signature from {heartbeat.signer_address}")
+                        return
+                except Exception as e:
+                    logger.debug(f"Heartbeat signature verification failed: {e}")
+                    # Allow for now if verification fails (backward compatibility)
+
+            # Update status
+            self._signer_status[heartbeat.signer_address] = SignerStatus(
+                address=heartbeat.signer_address,
+                peer_id=heartbeat.peer_id,
+                online=True,
+                last_seen=heartbeat.timestamp,
+                current_round=heartbeat.current_round,
+                signatures_pending=heartbeat.signatures_pending,
+            )
+
+            logger.debug(f"Heartbeat from signer {heartbeat.signer_address}")
+
+        except Exception as e:
+            logger.warning(f"Error handling heartbeat: {e}")
+
+    def get_signer_status(self, address: str) -> Optional[SignerStatus]:
+        """
+        Get status of a specific signer.
+
+        Args:
+            address: Signer's Evrmore address
+
+        Returns:
+            SignerStatus or None if not tracked
+        """
+        status = self._signer_status.get(address)
+        if status:
+            # Update online status based on time since last heartbeat
+            now = int(time.time())
+            status.online = (now - status.last_seen) < SIGNER_OFFLINE_THRESHOLD
+        return status
+
+    def get_all_signer_status(self) -> List[SignerStatus]:
+        """
+        Get status of all authorized signers.
+
+        Returns:
+            List of SignerStatus for all signers
+        """
+        now = int(time.time())
+        statuses = []
+        for addr in AUTHORIZED_SIGNERS:
+            status = self._signer_status.get(addr)
+            if status:
+                # Update online status based on time
+                status.online = (now - status.last_seen) < SIGNER_OFFLINE_THRESHOLD
+                statuses.append(status)
+            else:
+                # Create unknown status
+                statuses.append(SignerStatus(
+                    address=addr,
+                    peer_id="",
+                    online=False,
+                    last_seen=0,
+                ))
+        return statuses
+
+    def get_online_signers(self) -> List[str]:
+        """
+        Get list of online signer addresses.
+
+        Returns:
+            List of addresses of signers currently online
+        """
+        return [s.address for s in self.get_all_signer_status() if s.online]
+
+    def get_online_count(self) -> Tuple[int, int]:
+        """
+        Get count of online signers.
+
+        Returns:
+            (online_count, total_count) tuple
+        """
+        statuses = self.get_all_signer_status()
+        online = sum(1 for s in statuses if s.online)
+        return online, len(statuses)
+
+    def can_reach_threshold(self) -> bool:
+        """
+        Check if enough signers are online to reach threshold.
+
+        Returns:
+            True if online signers >= MULTISIG_THRESHOLD
+        """
+        online, _ = self.get_online_count()
+        return online >= MULTISIG_THRESHOLD
+
+    def get_network_status(self) -> Dict[str, Any]:
+        """
+        Get comprehensive network status for signers.
+
+        Returns:
+            Dict with:
+                - online_count: Number of online signers
+                - total_count: Total authorized signers
+                - threshold: Required signatures
+                - can_sign: Whether threshold can be met
+                - signers: List of signer statuses
+        """
+        statuses = self.get_all_signer_status()
+        online = sum(1 for s in statuses if s.online)
+
+        return {
+            'online_count': online,
+            'total_count': len(statuses),
+            'threshold': MULTISIG_THRESHOLD,
+            'can_sign': online >= MULTISIG_THRESHOLD,
+            'signers': [s.to_dict() for s in statuses],
+        }
+
+
+async def send_signer_heartbeat(
+    peers: "Peers",
+    signer_address: str,
+    wallet: Optional["EvrmoreWallet"] = None,
+    current_round: str = "",
+    signatures_pending: int = 0,
+) -> bool:
+    """
+    Send a heartbeat announcing signer online status.
+
+    Should be called periodically (every SIGNER_HEARTBEAT_INTERVAL seconds)
+    by authorized signers.
+
+    Args:
+        peers: Peers instance for broadcasting
+        signer_address: This signer's Evrmore address
+        wallet: EvrmoreWallet for signing (optional but recommended)
+        current_round: Current round being signed (optional)
+        signatures_pending: Number of pending signature requests
+
+    Returns:
+        True if heartbeat was sent successfully
+    """
+    import json
+
+    heartbeat = SignerHeartbeat(
+        signer_address=signer_address,
+        peer_id=peers.peer_id or "",
+        timestamp=int(time.time()),
+        current_round=current_round,
+        signatures_pending=signatures_pending,
+    )
+
+    # Sign if wallet available
+    if wallet:
+        try:
+            sig = wallet.sign(heartbeat.get_signing_message())
+            heartbeat.signature = sig.decode() if isinstance(sig, bytes) else str(sig)
+        except Exception as e:
+            logger.debug(f"Could not sign heartbeat: {e}")
+
+    try:
+        await peers.broadcast(
+            SIGNER_HEARTBEAT_TOPIC,
+            json.dumps(heartbeat.to_dict()).encode()
+        )
+        logger.debug(f"Sent signer heartbeat")
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to send heartbeat: {e}")
+        return False
 
 
 # ============================================================================

@@ -894,6 +894,8 @@ class ActivityStats:
     observations: int = 0
     consensus_votes: int = 0
     governance_votes: int = 0
+    proposals_created: int = 0
+    comments_posted: int = 0
 
     # Timestamps
     first_activity: int = 0
@@ -1031,6 +1033,14 @@ class ActivityStatsStorage(RedundantStorage[Dict]):
         """Convenience method for governance vote."""
         return await self.increment_stat("governance_votes")
 
+    async def increment_proposal_created(self) -> ActivityStats:
+        """Convenience method for proposal creation."""
+        return await self.increment_stat("proposals_created")
+
+    async def increment_comment_posted(self) -> ActivityStats:
+        """Convenience method for comment posting."""
+        return await self.increment_stat("comments_posted")
+
     async def get_all_rounds(self, node_id: str = None) -> List[str]:
         """Get all round IDs for a node."""
         nid = node_id or self.node_id
@@ -1048,6 +1058,8 @@ class ActivityStatsStorage(RedundantStorage[Dict]):
             "observations": 0,
             "consensus_votes": 0,
             "governance_votes": 0,
+            "proposals_created": 0,
+            "comments_posted": 0,
         }
 
         for round_id in rounds:
@@ -1104,7 +1116,8 @@ class ActivityStatsStorage(RedundantStorage[Dict]):
         # Check for discrepancies
         if result["local"] and result["dht"]:
             for field in ["heartbeats_sent", "heartbeats_received", "predictions",
-                          "observations", "consensus_votes", "governance_votes"]:
+                          "observations", "consensus_votes", "governance_votes",
+                          "proposals_created", "comments_posted"]:
                 local_val = result["local"].get(field, 0)
                 dht_val = result["dht"].get(field, 0)
                 # Allow some tolerance (local can be slightly higher due to sync delay)

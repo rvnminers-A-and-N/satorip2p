@@ -534,6 +534,227 @@ class ArchiverProtocol:
 
         return None
 
+    async def sync_archive(
+        self,
+        round_id: str,
+        archive_type: ArchiveType = ArchiveType.FULL_ROUND
+    ) -> bool:
+        """
+        Download and store an archive from the network.
+
+        Unlike request_archive(), this method stores the downloaded archive
+        locally for future retrieval without needing to request again.
+
+        Args:
+            round_id: Round to download
+            archive_type: Type of archive to download
+
+        Returns:
+            True if archive was downloaded and stored successfully
+        """
+        # Check if we already have it locally
+        if round_id in self._local_archives:
+            logger.debug(f"Archive {round_id} already exists locally")
+            return True
+
+        # Request from network
+        archived = await self.request_archive(round_id, archive_type)
+        if not archived:
+            logger.warning(f"Could not download archive {round_id}")
+            return False
+
+        # Store locally
+        archive_path = self._storage_path / f"{round_id}.json"
+        try:
+            with open(archive_path, 'w') as f:
+                json.dump(archived.to_dict(), f)
+        except Exception as e:
+            logger.error(f"Failed to store downloaded archive: {e}")
+            return False
+
+        # Create and store metadata
+        data_bytes = archived.to_bytes()
+        metadata = ArchiveMetadata(
+            round_id=round_id,
+            archive_type=archive_type,
+            merkle_root=archived.merkle_root,
+            size_bytes=len(data_bytes),
+            record_count=len(archived.predictions) + len(archived.observations) + len(archived.rewards),
+            timestamp=int(time.time()),
+            archiver_address=archived.archiver,  # Original archiver
+        )
+        self._local_archives[round_id] = metadata
+        self._save_local_index()
+
+        logger.info(f"Synced archive {round_id} ({metadata.record_count} records, {metadata.size_bytes} bytes)")
+        return True
+
+    async def sync_all_available(
+        self,
+        max_rounds: int = 100,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None
+    ) -> Dict[str, Any]:
+        """
+        Sync all available archives from the network.
+
+        Downloads archives that are available from network archivers but
+        not stored locally. Useful for bootstrapping a new node or
+        recovering missing data.
+
+        Args:
+            max_rounds: Maximum number of rounds to sync (to avoid overwhelming)
+            progress_callback: Optional callback(current, total, round_id) for progress
+
+        Returns:
+            Dict with sync results:
+                - synced: Number of archives successfully synced
+                - failed: Number of archives that failed to sync
+                - skipped: Number already available locally
+                - rounds_synced: List of round_ids synced
+                - rounds_failed: List of round_ids that failed
+        """
+        # Get all rounds available on network that we don't have locally
+        network_rounds = set(self._network_archives.keys())
+        local_rounds = set(self._local_archives.keys())
+        missing_rounds = network_rounds - local_rounds
+
+        if not missing_rounds:
+            logger.info("All network archives already synced locally")
+            return {
+                'synced': 0,
+                'failed': 0,
+                'skipped': len(local_rounds),
+                'rounds_synced': [],
+                'rounds_failed': []
+            }
+
+        # Sort and limit
+        rounds_to_sync = sorted(missing_rounds)[:max_rounds]
+        total = len(rounds_to_sync)
+
+        logger.info(f"Starting sync of {total} archives (total missing: {len(missing_rounds)})")
+
+        synced = 0
+        failed = 0
+        rounds_synced = []
+        rounds_failed = []
+
+        for i, round_id in enumerate(rounds_to_sync):
+            if progress_callback:
+                progress_callback(i + 1, total, round_id)
+
+            try:
+                success = await self.sync_archive(round_id)
+                if success:
+                    synced += 1
+                    rounds_synced.append(round_id)
+                else:
+                    failed += 1
+                    rounds_failed.append(round_id)
+            except Exception as e:
+                logger.warning(f"Error syncing {round_id}: {e}")
+                failed += 1
+                rounds_failed.append(round_id)
+
+            # Small delay between requests to avoid flooding
+            import trio
+            await trio.sleep(0.1)
+
+        logger.info(f"Sync complete: {synced} synced, {failed} failed, {len(local_rounds)} skipped")
+
+        return {
+            'synced': synced,
+            'failed': failed,
+            'skipped': len(local_rounds),
+            'rounds_synced': rounds_synced,
+            'rounds_failed': rounds_failed
+        }
+
+    async def sync_missing_from_archiver(
+        self,
+        archiver_address: str,
+        max_rounds: int = 50
+    ) -> Dict[str, Any]:
+        """
+        Sync missing archives from a specific archiver.
+
+        Args:
+            archiver_address: Address of the archiver to sync from
+            max_rounds: Maximum rounds to sync
+
+        Returns:
+            Dict with sync results
+        """
+        # Find what this archiver has that we don't
+        archiver_rounds = set()
+        for round_id, archivers in self._network_archives.items():
+            if archiver_address in archivers:
+                archiver_rounds.add(round_id)
+
+        local_rounds = set(self._local_archives.keys())
+        missing = archiver_rounds - local_rounds
+
+        if not missing:
+            return {
+                'synced': 0,
+                'failed': 0,
+                'archiver': archiver_address,
+                'message': 'Already have all archives from this archiver'
+            }
+
+        rounds_to_sync = sorted(missing)[:max_rounds]
+        logger.info(f"Syncing {len(rounds_to_sync)} archives from {archiver_address}")
+
+        synced = 0
+        failed = 0
+
+        for round_id in rounds_to_sync:
+            try:
+                success = await self.sync_archive(round_id)
+                if success:
+                    synced += 1
+                else:
+                    failed += 1
+            except Exception:
+                failed += 1
+
+            import trio
+            await trio.sleep(0.1)
+
+        return {
+            'synced': synced,
+            'failed': failed,
+            'archiver': archiver_address,
+            'total_available': len(archiver_rounds)
+        }
+
+    def get_sync_status(self) -> Dict[str, Any]:
+        """
+        Get current sync status comparing local vs network archives.
+
+        Returns:
+            Dict with:
+                - local_count: Archives stored locally
+                - network_count: Archives available on network
+                - missing_count: Archives we don't have
+                - sync_percent: Percentage synced
+                - missing_rounds: List of missing round_ids
+        """
+        network_rounds = set(self._network_archives.keys())
+        local_rounds = set(self._local_archives.keys())
+        missing_rounds = network_rounds - local_rounds
+
+        network_count = len(network_rounds)
+        sync_percent = (len(local_rounds) / network_count * 100) if network_count > 0 else 100.0
+
+        return {
+            'local_count': len(local_rounds),
+            'network_count': network_count,
+            'missing_count': len(missing_rounds),
+            'sync_percent': round(sync_percent, 1),
+            'missing_rounds': sorted(missing_rounds)[:100]  # Limit to first 100
+        }
+
     def get_local_archive(self, round_id: str) -> Optional[ArchivedRound]:
         """Get archive from local storage."""
         return self._load_round(round_id)

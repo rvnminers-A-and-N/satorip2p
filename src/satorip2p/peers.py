@@ -145,6 +145,11 @@ class Peers:
         self._rendezvous: Optional[RendezvousManager] = None
         self._upnp: Optional[UPnPManager] = None
 
+        # Rendezvous failover support
+        self._rendezvous_backup_peers: List[str] = []  # Sorted by latency (best first)
+        self._rendezvous_peers_by_latency: List[tuple] = []  # [(peer_id, latency_ms), ...]
+        self._rendezvous_peer_infos: Dict[str, Any] = {}  # peer_id -> peer_info
+
         # State
         self._started = False
         self._peer_info: Dict[str, PeerInfo] = {}
@@ -2251,24 +2256,129 @@ class Peers:
             import traceback
             traceback.print_exc()
 
+    async def _select_best_rendezvous_peer(self) -> tuple:
+        """
+        Select the best rendezvous server based on latency with failover support.
+
+        Pings all bootstrap peers concurrently and returns:
+        - The peer with lowest latency as primary
+        - Sorted list of backup peers for failover
+
+        Returns:
+            Tuple of (best_peer_id: str, backup_peer_ids: List[str], latencies: Dict[str, float])
+        """
+        if not self.bootstrap_peers:
+            return None, [], {}
+
+        from multiaddr import Multiaddr
+        from libp2p.peer.peerinfo import info_from_p2p_addr
+        import time
+
+        latencies = {}  # peer_id -> latency_ms
+        peer_infos = {}  # peer_id -> peer_info
+
+        async def measure_latency(addr: str) -> tuple:
+            """Measure connection latency to a bootstrap peer."""
+            try:
+                resolved_addr = self._resolve_multiaddr_dns(addr)
+                maddr = Multiaddr(resolved_addr)
+                peer_info = info_from_p2p_addr(maddr)
+                peer_id = str(peer_info.peer_id)
+
+                # Check if already connected
+                if peer_id in [str(p) for p in self._host.get_network().connections.keys()]:
+                    # Already connected - measure with a ping-like operation
+                    start = time.perf_counter()
+                    # Try to open a stream as latency test
+                    try:
+                        with trio.move_on_after(5) as cancel_scope:
+                            stream = await self._host.new_stream(peer_info.peer_id, ["/ipfs/ping/1.0.0"])
+                            if stream:
+                                await stream.close()
+                        if cancel_scope.cancelled_caught:
+                            return peer_id, peer_info, 5000.0  # Timeout = 5000ms
+                        latency = (time.perf_counter() - start) * 1000
+                    except Exception:
+                        latency = 100.0  # Assume 100ms if connected but ping fails
+                    return peer_id, peer_info, latency
+                else:
+                    # Not connected - measure connection time
+                    start = time.perf_counter()
+                    with trio.move_on_after(10) as cancel_scope:
+                        await self._host.connect(peer_info)
+                    if cancel_scope.cancelled_caught:
+                        return peer_id, peer_info, 10000.0  # Timeout = 10000ms
+                    latency = (time.perf_counter() - start) * 1000
+                    return peer_id, peer_info, latency
+
+            except Exception as e:
+                logger.debug(f"Failed to measure latency to {addr[:50]}...: {e}")
+                return None, None, float('inf')
+
+        # Measure latency to all bootstrap peers concurrently
+        logger.info(f"Measuring latency to {len(self.bootstrap_peers)} bootstrap peer(s) for rendezvous selection...")
+
+        async with trio.open_nursery() as nursery:
+            results = []
+
+            async def collect_result(addr):
+                result = await measure_latency(addr)
+                results.append(result)
+
+            for addr in self.bootstrap_peers:
+                nursery.start_soon(collect_result, addr)
+
+        # Process results
+        for peer_id, peer_info, latency in results:
+            if peer_id and latency < float('inf'):
+                latencies[peer_id] = latency
+                peer_infos[peer_id] = peer_info
+
+        if not latencies:
+            logger.warning("No bootstrap peers reachable for rendezvous")
+            return None, [], {}
+
+        # Sort by latency
+        sorted_peers = sorted(latencies.items(), key=lambda x: x[1])
+        best_peer_id = sorted_peers[0][0]
+        best_latency = sorted_peers[0][1]
+        backup_peer_ids = [p[0] for p in sorted_peers[1:]]
+
+        logger.info(f"Selected rendezvous server: {best_peer_id[:16]}... (latency: {best_latency:.1f}ms)")
+        if backup_peer_ids:
+            logger.debug(f"Backup rendezvous servers: {len(backup_peer_ids)} available")
+
+        # Store for potential failover
+        self._rendezvous_peers_by_latency = sorted_peers
+        self._rendezvous_peer_infos = peer_infos
+
+        return best_peer_id, backup_peer_ids, latencies
+
     async def _init_rendezvous(self) -> None:
         """Initialize Rendezvous protocol for stream-specific discovery."""
         if not self._host:
             return
 
-        # Get rendezvous peer ID from first bootstrap peer (for client mode)
+        # Select best rendezvous peer based on latency (for client mode)
         rendezvous_peer_id = None
         if not self.rendezvous_is_server and self.bootstrap_peers:
             try:
-                from multiaddr import Multiaddr
-                from libp2p.peer.peerinfo import info_from_p2p_addr
+                best_peer_id, backup_peers, latencies = await self._select_best_rendezvous_peer()
+                if best_peer_id:
+                    rendezvous_peer_id = best_peer_id
+                    # Store backups for failover
+                    self._rendezvous_backup_peers = backup_peers
+                else:
+                    # Fallback to first bootstrap peer if latency measurement fails
+                    from multiaddr import Multiaddr
+                    from libp2p.peer.peerinfo import info_from_p2p_addr
 
-                maddr = Multiaddr(self.bootstrap_peers[0])
-                peer_info = info_from_p2p_addr(maddr)
-                rendezvous_peer_id = str(peer_info.peer_id)
-                logger.debug(f"Using rendezvous server: {rendezvous_peer_id}")
+                    maddr = Multiaddr(self.bootstrap_peers[0])
+                    peer_info = info_from_p2p_addr(maddr)
+                    rendezvous_peer_id = str(peer_info.peer_id)
+                    logger.debug(f"Fallback to first bootstrap for rendezvous: {rendezvous_peer_id[:16]}...")
             except Exception as e:
-                logger.debug(f"Failed to parse bootstrap for rendezvous: {e}")
+                logger.debug(f"Failed to select rendezvous peer: {e}")
 
         self._rendezvous = RendezvousManager(
             self._host,
@@ -2282,6 +2392,81 @@ class Peers:
             logger.info(f"Rendezvous protocol initialized ({mode} mode)")
         else:
             logger.debug("Rendezvous running in local-only mode")
+
+    async def failover_rendezvous(self) -> bool:
+        """
+        Switch to the next available rendezvous server if current one fails.
+
+        This is called when rendezvous operations fail repeatedly, allowing
+        automatic recovery by switching to a backup server.
+
+        Returns:
+            True if successfully failed over to a new server, False if no backups available
+        """
+        if not self._rendezvous_backup_peers:
+            logger.warning("No backup rendezvous servers available for failover")
+            return False
+
+        if self.rendezvous_is_server:
+            logger.debug("This node is a rendezvous server, failover not applicable")
+            return False
+
+        # Get the next backup peer
+        next_peer_id = self._rendezvous_backup_peers.pop(0)
+        logger.info(f"Failing over rendezvous to: {next_peer_id[:16]}...")
+
+        try:
+            # Stop current rendezvous
+            if self._rendezvous:
+                await self._rendezvous.stop()
+
+            # Create new rendezvous manager with backup peer
+            self._rendezvous = RendezvousManager(
+                self._host,
+                rendezvous_peer_id=next_peer_id,
+                is_server=False,
+            )
+            started = await self._rendezvous.start(nursery=self._nursery)
+
+            if started:
+                # Find latency for logging
+                latency = "unknown"
+                for peer_id, lat in self._rendezvous_peers_by_latency:
+                    if peer_id == next_peer_id:
+                        latency = f"{lat:.1f}ms"
+                        break
+                logger.info(f"Rendezvous failover successful to {next_peer_id[:16]}... (latency: {latency})")
+                return True
+            else:
+                logger.warning(f"Rendezvous failover to {next_peer_id[:16]}... failed to start")
+                # Try next backup recursively
+                return await self.failover_rendezvous()
+
+        except Exception as e:
+            logger.error(f"Rendezvous failover failed: {e}")
+            # Try next backup recursively
+            return await self.failover_rendezvous()
+
+    def get_rendezvous_status(self) -> dict:
+        """
+        Get current rendezvous server status and available backups.
+
+        Returns:
+            Dict with current server, backup count, and latency info
+        """
+        current_peer = None
+        if self._rendezvous and hasattr(self._rendezvous, '_rendezvous_peer_id'):
+            current_peer = self._rendezvous._rendezvous_peer_id
+
+        return {
+            "is_server": self.rendezvous_is_server,
+            "current_peer": current_peer[:16] + "..." if current_peer else None,
+            "backup_count": len(self._rendezvous_backup_peers),
+            "peers_by_latency": [
+                {"peer_id": p[:16] + "...", "latency_ms": round(l, 1)}
+                for p, l in self._rendezvous_peers_by_latency[:5]  # Top 5
+            ],
+        }
 
     async def _register_handlers(self) -> None:
         """Register protocol stream handlers."""

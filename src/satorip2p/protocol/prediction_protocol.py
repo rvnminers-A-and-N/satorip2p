@@ -150,6 +150,9 @@ class PredictionProtocol:
         self._score_callbacks: List[Callable] = []
         self._started = False
 
+        # External callback for bridge integration (set by p2p_bridge)
+        self.on_prediction_received: Optional[Callable[[Prediction], None]] = None
+
     @property
     def evrmore_address(self) -> str:
         """Get our Evrmore address."""
@@ -290,13 +293,20 @@ class PredictionProtocol:
             if len(self._prediction_cache[stream_id]) > self.MAX_CACHE_SIZE:
                 self._prediction_cache[stream_id] = self._prediction_cache[stream_id][-self.MAX_CACHE_SIZE:]
 
-            # Notify callbacks
+            # Notify stream-specific callbacks
             if stream_id in self._subscribed_streams:
                 for callback in self._subscribed_streams[stream_id]:
                     try:
                         callback(prediction)
                     except Exception as e:
                         logger.debug(f"Prediction callback error: {e}")
+
+            # Notify global callback (for p2p_bridge integration)
+            if self.on_prediction_received:
+                try:
+                    self.on_prediction_received(prediction)
+                except Exception as e:
+                    logger.debug(f"Global prediction callback error: {e}")
 
             logger.debug(
                 f"Received prediction for {stream_id} "

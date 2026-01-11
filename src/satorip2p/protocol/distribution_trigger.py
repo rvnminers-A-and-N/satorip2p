@@ -251,6 +251,161 @@ class DistributionTrigger:
             timestamp=int(time.time()),
         )
 
+    def get_signer_status(self) -> Dict:
+        """
+        Get distribution status for signers (includes control info).
+
+        Returns:
+            Dict with signer-specific status info
+        """
+        status = self.get_status()
+        return {
+            'status': status.phase.value,
+            'pool_amount': status.total_reward,
+            'eligible_count': status.num_recipients,
+            'consensus_round': self._current_round,
+            'pending_distribution': {
+                'round_id': status.round_id,
+                'merkle_root': status.merkle_root,
+                'signatures': status.signatures_collected,
+                'required': status.signatures_required,
+            } if status.phase in [DistributionPhase.WAITING_SIGNATURES, DistributionPhase.CONSENSUS_REACHED] else None,
+        }
+
+    def get_preview(self) -> Dict:
+        """
+        Get preview of pending distribution.
+
+        Returns:
+            Dict with preview info (top recipients, amounts, etc.)
+        """
+        if not self._round_summary:
+            return {
+                'round_id': None,
+                'pool_amount': 0,
+                'recipient_count': 0,
+                'top_recipients': [],
+            }
+
+        # Sort rewards by amount descending
+        rewards = sorted(
+            self._round_summary.rewards,
+            key=lambda r: r.amount,
+            reverse=True
+        )
+
+        # Top 10 recipients (masked addresses for privacy)
+        top_recipients = []
+        for r in rewards[:10]:
+            addr = r.address
+            masked = f"{addr[:6]}...{addr[-4:]}" if len(addr) > 10 else addr
+            top_recipients.append({
+                'address': masked,
+                'amount': r.amount,
+                'prediction_score': getattr(r, 'prediction_score', 0),
+            })
+
+        return {
+            'round_id': self._round_summary.round_id,
+            'pool_amount': self._round_summary.total_reward_pool,
+            'recipient_count': len(self._round_summary.rewards),
+            'top_recipients': top_recipients,
+        }
+
+    def get_my_history(self, limit: int = 10) -> Dict:
+        """
+        Get distribution history for the current user.
+
+        Args:
+            limit: Maximum number of records to return
+
+        Returns:
+            Dict with user's distribution history
+        """
+        # This would query stored distribution records
+        # For now, return placeholder
+        return {
+            'distributions': [],
+            'total_earned': 0.0,
+        }
+
+    def get_all_history(self, limit: int = 10) -> Dict:
+        """
+        Get all distribution history (for signers).
+
+        Args:
+            limit: Maximum number of records to return
+
+        Returns:
+            Dict with all distribution history
+        """
+        # This would query stored distribution records
+        # For now, return placeholder
+        return {
+            'distributions': [],
+        }
+
+    def sign_distribution(self) -> Dict:
+        """
+        Sign the pending distribution (signer action).
+
+        Returns:
+            Dict with signing result
+        """
+        if not self.signer_node:
+            return {
+                'success': False,
+                'error': 'Not a signer node',
+                'signatures': 0,
+                'required': 3,
+            }
+
+        if self._phase != DistributionPhase.WAITING_SIGNATURES:
+            return {
+                'success': False,
+                'error': f'Cannot sign in phase: {self._phase.value}',
+                'signatures': 0,
+                'required': 3,
+            }
+
+        # The signer node should auto-sign when a request comes in
+        # This triggers a manual sign if needed
+        status = self.signer_node.check_signing_status()
+
+        return {
+            'success': True,
+            'signatures': status.signatures_collected,
+            'required': status.signatures_required,
+        }
+
+    def reject_distribution(self) -> Dict:
+        """
+        Reject the pending distribution (signer action).
+
+        Returns:
+            Dict with rejection result
+        """
+        if not self.signer_node:
+            return {
+                'success': False,
+                'error': 'Not a signer node',
+            }
+
+        if self._phase != DistributionPhase.WAITING_SIGNATURES:
+            return {
+                'success': False,
+                'error': f'Cannot reject in phase: {self._phase.value}',
+            }
+
+        # Cancel the distribution
+        self._phase = DistributionPhase.FAILED
+        self._error_message = "Distribution rejected by signer"
+
+        return {
+            'success': True,
+            'message': 'Distribution rejected',
+        }
+
     def check_timeout(self) -> bool:
         """
         Check if distribution has timed out.

@@ -299,23 +299,25 @@ GOVERNANCE_BONUS_CAP = 0.15         # Maximum +15% governance bonus
 #
 # Nodes that donate EVR to the treasury earn bonus multipliers.
 # This keeps EVR flowing through the system to fund operations.
-# Tiers are based on total EVR donated:
+# Tiers are based on CUMULATIVE total EVR donated:
 #
-# | Tier     | Total Donated   | Bonus | ~USD Value |
-# |----------|-----------------|-------|------------|
-# | Bronze   | 100,000 EVR     | +4%   | ~$9        |
-# | Silver   | 250,000 EVR     | +8%   | ~$22       |
-# | Gold     | 500,000 EVR     | +12%  | ~$44       |
-# | Platinum | 1,000,000 EVR   | +16%  | ~$89       |
-# | Diamond  | 5,000,000 EVR   | +20%  | ~$444      |
+# | Tier     | Total Donated  | Bonus | ~USD Value (@$0.002/EVR) |
+# |----------|----------------|-------|--------------------------|
+# | Bronze   | 500 EVR        | +4%   | ~$1                      |
+# | Silver   | 2,500 EVR      | +8%   | ~$5                      |
+# | Gold     | 10,000 EVR     | +12%  | ~$20                     |
+# | Platinum | 50,000 EVR     | +16%  | ~$100                    |
+# | Diamond  | 250,000 EVR    | +20%  | ~$500                    |
 #
+# Note: These thresholds are higher than badge tiers (badges.py) because
+# bonus multipliers provide ongoing benefits, while badges are one-time awards.
 # Reaching Diamond tier earns the "charity" title.
 
-DONATION_TIER_BRONZE = 100000       # 100,000 EVR (~$9)
-DONATION_TIER_SILVER = 250000       # 250,000 EVR (~$22)
-DONATION_TIER_GOLD = 500000         # 500,000 EVR (~$44)
-DONATION_TIER_PLATINUM = 1000000    # 1,000,000 EVR (~$89)
-DONATION_TIER_DIAMOND = 5000000     # 5,000,000 EVR (~$444)
+DONATION_TIER_BRONZE = 500          # 500 EVR (~$1)
+DONATION_TIER_SILVER = 2500         # 2,500 EVR (~$5)
+DONATION_TIER_GOLD = 10000          # 10,000 EVR (~$20)
+DONATION_TIER_PLATINUM = 50000      # 50,000 EVR (~$100)
+DONATION_TIER_DIAMOND = 250000      # 250,000 EVR (~$500)
 
 DONATION_BONUS_BRONZE = 0.04      # +4%
 DONATION_BONUS_SILVER = 0.08      # +8%
@@ -448,11 +450,11 @@ def calculate_donation_bonus(total_donated_evr: float) -> float:
 
     Examples:
         0 EVR         -> 0% bonus
-        1,000 EVR     -> +4% bonus (Bronze)
-        5,000 EVR     -> +8% bonus (Silver)
-        25,000 EVR    -> +12% bonus (Gold)
-        100,000 EVR   -> +16% bonus (Platinum)
-        500,000+ EVR  -> +20% bonus (Diamond)
+        500 EVR       -> +4% bonus (Bronze)
+        2,500 EVR     -> +8% bonus (Silver)
+        10,000 EVR    -> +12% bonus (Gold)
+        50,000 EVR    -> +16% bonus (Platinum)
+        250,000+ EVR  -> +20% bonus (Diamond)
 
     Args:
         total_donated_evr: Total EVR donated to treasury
@@ -706,22 +708,30 @@ def get_total_multiplier(
     total_donated_evr: float = 0.0,
     governance_vote_rate: float = 0.0,
     governance_proposals: int = 0,
-    governance_comments: int = 0
+    governance_comments: int = 0,
+    reputation_score: float = 50.0,
+    slashing_multiplier: float = 1.0,
+    incentive_activity_bonus: float = 0.0,
 ) -> float:
     """
     Calculate total reward multiplier combining all bonus sources.
 
-    All bonuses are ADDITIVE to the base 1.0.
-    Total cap is 2.25x (base 1.0 + 125% maximum bonus).
+    Additive bonuses are combined first, then slashing is applied as a gate.
+    Total cap is 2.50x (base 1.0 + 150% maximum bonus).
 
-    Bonus breakdown:
-    - Stake: +5% per SATORI above minimum (50), capped at +25% (55 SATORI)
+    Additive Bonus breakdown:
+    - Stake: +5% per SATORI above minimum (50), capped at +25%
     - Role: +5% relay, +10% oracle, +15% signer, capped at +30%
     - Referral: +2% to +15% based on referral tier
     - Pool Diversity: +2% to +10% for smaller pools
     - Uptime Streak: +2% to +10% for consecutive days of ≥95% uptime
     - Donation: +4% to +20% based on total EVR donated
     - Governance: +2% to +15% based on voting, proposals, comments
+    - Reputation: +10% for trusted (90+ score), 0% normal, -25% suspect (penalty)
+    - Incentive Activity: +5% challenges, +3% mentoring, +4% data availability, +3% network health (up to +15%)
+
+    Multiplicative Gate (applied after additive):
+    - Slashing: 1.0 normal, 0.5 warned, 0.0 removed (cancels all rewards)
 
     Args:
         stake: Amount of SATORI staked
@@ -733,10 +743,17 @@ def get_total_multiplier(
         governance_vote_rate: Percentage of proposals voted on (0.0 to 1.0)
         governance_proposals: Number of proposals created
         governance_comments: Number of comments on proposals
+        reputation_score: Peer reputation score (0-100, default 50)
+        slashing_multiplier: Slashing gate (0.0=removed, 0.5=warned, 1.0=normal)
+        incentive_activity_bonus: Activity bonus from IncentiveCoordinator (0.0 to 0.15)
 
     Returns:
-        Total multiplier (1.0 to 2.25)
+        Total multiplier (0.0 to 2.50)
     """
+    # If slashed to 0, no rewards at all
+    if slashing_multiplier <= 0:
+        return 0.0
+
     stake_bonus = calculate_stake_bonus(stake)
     role_bonus = role_multiplier - 1.0  # Extract bonus from multiplier
     referral_bonus = calculate_referral_bonus(referral_count)
@@ -747,13 +764,53 @@ def get_total_multiplier(
         governance_vote_rate, governance_proposals, governance_comments
     )
 
-    # Combine bonuses (all added to base 1.0)
+    # Calculate reputation bonus/penalty based on score
+    reputation_bonus = _calculate_reputation_bonus(reputation_score)
+
+    # Cap incentive activity bonus at 15% (challenges 5% + mentoring 3% + data availability 4% + network health 3%)
+    activity_bonus = min(incentive_activity_bonus, 0.15)
+
+    # Combine additive bonuses (all added to base 1.0)
     total = (1.0 + stake_bonus + role_bonus + referral_bonus +
              pool_diversity_bonus + uptime_streak_bonus + donation_bonus +
-             governance_bonus)
+             governance_bonus + reputation_bonus + activity_bonus)
 
-    # Cap at 2.25 (125% maximum bonus)
-    return min(total, 2.25)
+    # Cap additive total at 2.50 (150% maximum bonus)
+    total = min(total, 2.50)
+
+    # Apply slashing as multiplicative gate
+    total = total * slashing_multiplier
+
+    return total
+
+
+# Reputation score thresholds (must match reputation.py)
+REPUTATION_TRUSTED_MIN = 90
+REPUTATION_GOOD_MIN = 70
+REPUTATION_NEUTRAL_MIN = 50
+REPUTATION_SUSPECT_MIN = 30
+
+
+def _calculate_reputation_bonus(score: float) -> float:
+    """
+    Calculate reputation bonus/penalty based on score.
+
+    Args:
+        score: Reputation score (0-100)
+
+    Returns:
+        Bonus: +0.10 for trusted, 0.0 for good/neutral, -0.25 for suspect
+    """
+    if score >= REPUTATION_TRUSTED_MIN:
+        return 0.10   # +10% for trusted
+    elif score >= REPUTATION_GOOD_MIN:
+        return 0.0    # Normal
+    elif score >= REPUTATION_NEUTRAL_MIN:
+        return 0.0    # Normal
+    elif score >= REPUTATION_SUSPECT_MIN:
+        return -0.25  # -25% for suspect
+    else:
+        return -1.0   # Untrusted: effectively 0 rewards (base 1.0 - 1.0 = 0)
 
 
 @dataclass
@@ -1605,7 +1662,13 @@ class RewardCalculator:
         reward_pool: float,
         node_roles: Optional[Dict[str, "NodeRoles"]] = None,
         referral_counts: Optional[Dict[str, int]] = None,
-        pool_stakes: Optional[Dict[str, float]] = None
+        pool_stakes: Optional[Dict[str, float]] = None,
+        uptime_streak_days: Optional[Dict[str, int]] = None,
+        donation_amounts: Optional[Dict[str, float]] = None,
+        governance_stats: Optional[Dict[str, Dict[str, float]]] = None,
+        reputation_scores: Optional[Dict[str, float]] = None,
+        slashing_multipliers: Optional[Dict[str, float]] = None,
+        incentive_activity_bonuses: Optional[Dict[str, float]] = None,
     ) -> Dict[str, float]:
         """
         Distribute reward pool using PREDICTION-CENTRIC model.
@@ -1617,19 +1680,18 @@ class RewardCalculator:
         The formula is:
         Your Reward = (Score × Total_Multiplier) / Sum(All Weighted Scores) × Pool
 
-        Where Total_Multiplier = 1.0 + stake_bonus + role_bonus + referral_bonus + pool_diversity_bonus
+        Where Total_Multiplier combines additive bonuses + slashing gate:
         - stake_bonus: +5% per 50 SATORI above 50 minimum, capped at +25%
-        - role_bonus: +5% relay, +10% oracle, +10% signer, capped at +25%
+        - role_bonus: +5% relay, +10% oracle, +15% signer, capped at +30%
         - referral_bonus: +2% to +15% based on referral tier
-        - pool_diversity_bonus: +2% to +10% for smaller pools (decentralization incentive)
-        - Total cap: +75% maximum (1.75x multiplier)
-
-        Example:
-        - Node A: 0.80 accuracy, 50 SATORI, no roles, no refs -> 0.80 × 1.00 = 0.80
-        - Node B: 0.80 accuracy, 200 SATORI, relay, small pool -> 0.80 × 1.30 = 1.04
-        - Node C: 0.60 accuracy, 500 SATORI, all roles, Diamond -> 0.60 × 1.75 = 1.05
-        - Node D: 0.80 accuracy, 50 SATORI, no roles, Gold refs -> 0.80 × 1.08 = 0.864
-        Node C wins with maximum multiplier but poor predictions still limits reward.
+        - pool_diversity_bonus: +2% to +10% for smaller pools
+        - uptime_streak_bonus: +2% to +10% for consecutive uptime days
+        - donation_bonus: +4% to +20% based on total EVR donated
+        - governance_bonus: +2% to +15% based on voting participation
+        - reputation_bonus: +10% trusted, 0% normal, -25% suspect
+        - incentive_activity_bonus: +15% max for verified unique activities
+        - slashing_multiplier: Gate (0.0=removed, 0.5=warned, 1.0=normal)
+        - Total cap: 2.50x maximum
 
         Args:
             scores: {address: (score, prediction)}
@@ -1637,6 +1699,12 @@ class RewardCalculator:
             node_roles: Optional {address: NodeRoles} for role multipliers
             referral_counts: Optional {address: count} for referral bonuses
             pool_stakes: Optional {address: total_stake} for pool diversity bonus
+            uptime_streak_days: Optional {address: days} for uptime streak bonus
+            donation_amounts: Optional {address: evr_donated} for donation bonus
+            governance_stats: Optional {address: {vote_rate, proposals, comments}}
+            reputation_scores: Optional {address: score} for reputation bonus (0-100)
+            slashing_multipliers: Optional {address: multiplier} for slashing gate (0-1)
+            incentive_activity_bonuses: Optional {address: bonus} for activity bonus (0-0.15)
 
         Returns:
             {address: reward_amount}
@@ -1648,7 +1716,7 @@ class RewardCalculator:
         # NOTE: stake provides BONUS, not proportional scaling
         weighted_scores: Dict[str, float] = {}
         for address, (score, prediction) in scores.items():
-            # Get role multiplier (1.0 to 1.25)
+            # Get role multiplier (1.0 to 1.30)
             role_multiplier = 1.0
             if node_roles and address in node_roles:
                 role_multiplier = node_roles[address].get_multiplier()
@@ -1663,9 +1731,57 @@ class RewardCalculator:
             if pool_stakes and address in pool_stakes:
                 pool_total = pool_stakes[address]
 
-            # Get total multiplier (stake bonus + role bonus + referral bonus + pool diversity)
+            # Get uptime streak days
+            uptime_days = 0
+            if uptime_streak_days and address in uptime_streak_days:
+                uptime_days = uptime_streak_days[address]
+
+            # Get donation amount
+            donated_evr = 0.0
+            if donation_amounts and address in donation_amounts:
+                donated_evr = donation_amounts[address]
+
+            # Get governance stats
+            gov_vote_rate = 0.0
+            gov_proposals = 0
+            gov_comments = 0
+            if governance_stats and address in governance_stats:
+                gov_data = governance_stats[address]
+                gov_vote_rate = gov_data.get('vote_rate', 0.0)
+                gov_proposals = int(gov_data.get('proposals', 0))
+                gov_comments = int(gov_data.get('comments', 0))
+
+            # Get reputation score (default 50 = neutral)
+            rep_score = 50.0
+            if reputation_scores and address in reputation_scores:
+                rep_score = reputation_scores[address]
+
+            # Get slashing multiplier (default 1.0 = no penalty)
+            slash_mult = 1.0
+            if slashing_multipliers and address in slashing_multipliers:
+                slash_mult = slashing_multipliers[address]
+
+            # Get incentive activity bonus (default 0.0)
+            activity_bonus = 0.0
+            if incentive_activity_bonuses and address in incentive_activity_bonuses:
+                activity_bonus = incentive_activity_bonuses[address]
+
+            # Get total multiplier with all bonuses
             stake = prediction.stake if hasattr(prediction, 'stake') else MIN_STAKE
-            total_multiplier = get_total_multiplier(stake, role_multiplier, ref_count, pool_total)
+            total_multiplier = get_total_multiplier(
+                stake=stake,
+                role_multiplier=role_multiplier,
+                referral_count=ref_count,
+                pool_total_stake=pool_total,
+                uptime_streak_days=uptime_days,
+                total_donated_evr=donated_evr,
+                governance_vote_rate=gov_vote_rate,
+                governance_proposals=gov_proposals,
+                governance_comments=gov_comments,
+                reputation_score=rep_score,
+                slashing_multiplier=slash_mult,
+                incentive_activity_bonus=activity_bonus,
+            )
 
             # Score × multiplier (predictions are primary, bonuses are secondary)
             weighted_scores[address] = score * total_multiplier

@@ -8,6 +8,8 @@ Enables smooth protocol upgrades while maintaining backward compatibility:
 - Multi-version negotiation
 - Feature capability advertising
 - Graceful degradation for older peers
+- Governance-triggered upgrades
+- Upgrade notification system
 
 Usage:
     from satorip2p.protocol.versioning import (
@@ -28,11 +30,21 @@ Usage:
 """
 
 import logging
+import time
+import json
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple, Any, TYPE_CHECKING
 from enum import Enum
+from pathlib import Path
+
+if TYPE_CHECKING:
+    from satorip2p.peers import Peers
 
 logger = logging.getLogger("satorip2p.protocol.versioning")
+
+# PubSub topics for upgrade notifications
+UPGRADE_NOTIFICATION_TOPIC = "satori/protocol/upgrades"
+VERSION_ANNOUNCE_TOPIC = "satori/protocol/version"
 
 
 # ============================================================================
@@ -631,3 +643,578 @@ def check_compatibility(version: str) -> Tuple[bool, str]:
 
     except ValueError as e:
         return False, f"Invalid version format: {e}"
+
+
+# ============================================================================
+# UPGRADE STATUS
+# ============================================================================
+
+class UpgradeStatus(Enum):
+    """Status of a protocol upgrade."""
+    PROPOSED = "proposed"         # Upgrade proposed via governance
+    APPROVED = "approved"         # Governance approved, pending activation
+    ACTIVATING = "activating"     # Activation in progress
+    ACTIVE = "active"             # Upgrade complete, new version active
+    REJECTED = "rejected"         # Governance rejected
+    FAILED = "failed"             # Activation failed
+
+
+class UpgradeType(Enum):
+    """Types of protocol upgrades."""
+    MINOR = "minor"               # Backward-compatible features
+    MAJOR = "major"               # Breaking changes
+    PATCH = "patch"               # Bug fixes only
+    FEATURE = "feature"           # Single feature addition
+
+
+@dataclass
+class UpgradeProposal:
+    """A protocol upgrade proposal from governance."""
+    proposal_id: str              # Governance proposal ID
+    target_version: str           # Version to upgrade to
+    upgrade_type: UpgradeType
+    title: str
+    description: str
+    features: List[str]           # New features in this version
+    breaking_changes: List[str]   # Breaking changes if any
+    migration_notes: str = ""
+
+    # Activation timing
+    activation_height: int = 0    # Block height for activation (if time-locked)
+    activation_timestamp: int = 0  # Timestamp for activation
+    grace_period_days: int = 7    # Days between approval and activation
+
+    # Status
+    status: UpgradeStatus = UpgradeStatus.PROPOSED
+    proposed_at: int = 0
+    approved_at: int = 0
+    activated_at: int = 0
+
+    def to_dict(self) -> dict:
+        return {
+            'proposal_id': self.proposal_id,
+            'target_version': self.target_version,
+            'upgrade_type': self.upgrade_type.value,
+            'title': self.title,
+            'description': self.description,
+            'features': self.features,
+            'breaking_changes': self.breaking_changes,
+            'migration_notes': self.migration_notes,
+            'activation_height': self.activation_height,
+            'activation_timestamp': self.activation_timestamp,
+            'grace_period_days': self.grace_period_days,
+            'status': self.status.value,
+            'proposed_at': self.proposed_at,
+            'approved_at': self.approved_at,
+            'activated_at': self.activated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "UpgradeProposal":
+        return cls(
+            proposal_id=data['proposal_id'],
+            target_version=data['target_version'],
+            upgrade_type=UpgradeType(data.get('upgrade_type', 'minor')),
+            title=data.get('title', ''),
+            description=data.get('description', ''),
+            features=data.get('features', []),
+            breaking_changes=data.get('breaking_changes', []),
+            migration_notes=data.get('migration_notes', ''),
+            activation_height=data.get('activation_height', 0),
+            activation_timestamp=data.get('activation_timestamp', 0),
+            grace_period_days=data.get('grace_period_days', 7),
+            status=UpgradeStatus(data.get('status', 'proposed')),
+            proposed_at=data.get('proposed_at', 0),
+            approved_at=data.get('approved_at', 0),
+            activated_at=data.get('activated_at', 0),
+        )
+
+
+@dataclass
+class UpgradeNotification:
+    """Notification about a pending or completed upgrade."""
+    notification_id: str
+    upgrade_proposal_id: str
+    target_version: str
+    notification_type: str        # "proposed", "approved", "activating", "activated"
+    message: str
+    timestamp: int
+    sender_peer_id: str = ""
+    urgency: str = "normal"       # "low", "normal", "high", "critical"
+
+    def to_dict(self) -> dict:
+        return {
+            'notification_id': self.notification_id,
+            'upgrade_proposal_id': self.upgrade_proposal_id,
+            'target_version': self.target_version,
+            'notification_type': self.notification_type,
+            'message': self.message,
+            'timestamp': self.timestamp,
+            'sender_peer_id': self.sender_peer_id,
+            'urgency': self.urgency,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "UpgradeNotification":
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+
+# ============================================================================
+# UPGRADE MANAGER
+# ============================================================================
+
+class UpgradeManager:
+    """
+    Manages protocol upgrades triggered by governance.
+
+    Handles:
+    - Upgrade proposal tracking
+    - Activation scheduling
+    - Peer notification
+    - Graceful degradation during transitions
+    """
+
+    def __init__(
+        self,
+        peers: Optional["Peers"] = None,
+        storage_path: Optional[Path] = None,
+    ):
+        """
+        Initialize the upgrade manager.
+
+        Args:
+            peers: Peers instance for network operations
+            storage_path: Path for local storage
+        """
+        self._peers = peers
+        self._storage_path = storage_path or Path.home() / ".satori" / "upgrades"
+        self._storage_path.mkdir(parents=True, exist_ok=True)
+
+        # Active proposals: proposal_id -> UpgradeProposal
+        self._proposals: Dict[str, UpgradeProposal] = {}
+
+        # Notification history
+        self._notifications: List[UpgradeNotification] = []
+
+        # Callbacks
+        self._on_upgrade_proposed_callbacks: List[callable] = []
+        self._on_upgrade_approved_callbacks: List[callable] = []
+        self._on_upgrade_activated_callbacks: List[callable] = []
+
+        # Load local data
+        self._load_local_data()
+
+        self._started = False
+
+    async def start(self) -> None:
+        """Start the upgrade manager."""
+        if self._started:
+            return
+
+        if self._peers:
+            await self._peers.subscribe_async(
+                UPGRADE_NOTIFICATION_TOPIC,
+                self._on_upgrade_notification
+            )
+
+        self._started = True
+        logger.info("Upgrade manager started")
+
+    async def stop(self) -> None:
+        """Stop the upgrade manager."""
+        if not self._started:
+            return
+
+        self._save_local_data()
+
+        if self._peers:
+            self._peers.unsubscribe(UPGRADE_NOTIFICATION_TOPIC)
+
+        self._started = False
+        logger.info("Upgrade manager stopped")
+
+    def _load_local_data(self) -> None:
+        """Load data from local storage."""
+        try:
+            proposals_file = self._storage_path / "proposals.json"
+            if proposals_file.exists():
+                with open(proposals_file, 'r') as f:
+                    data = json.load(f)
+                for proposal_id, proposal_data in data.items():
+                    self._proposals[proposal_id] = UpgradeProposal.from_dict(proposal_data)
+
+            logger.debug(f"Loaded {len(self._proposals)} upgrade proposals")
+        except Exception as e:
+            logger.warning(f"Failed to load upgrade data: {e}")
+
+    def _save_local_data(self) -> None:
+        """Save data to local storage."""
+        try:
+            proposals_file = self._storage_path / "proposals.json"
+            proposals_data = {pid: p.to_dict() for pid, p in self._proposals.items()}
+            with open(proposals_file, 'w') as f:
+                json.dump(proposals_data, f, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to save upgrade data: {e}")
+
+    # -------------------------------------------------------------------------
+    # Governance Integration
+    # -------------------------------------------------------------------------
+
+    def register_upgrade_proposal(
+        self,
+        proposal_id: str,
+        target_version: str,
+        title: str,
+        description: str,
+        features: Optional[List[str]] = None,
+        breaking_changes: Optional[List[str]] = None,
+        migration_notes: str = "",
+        grace_period_days: int = 7,
+    ) -> UpgradeProposal:
+        """
+        Register a new upgrade proposal from governance.
+
+        Args:
+            proposal_id: Governance proposal ID
+            target_version: Version to upgrade to
+            title: Proposal title
+            description: Proposal description
+            features: New features in this version
+            breaking_changes: Breaking changes if any
+            migration_notes: Migration instructions
+            grace_period_days: Days between approval and activation
+
+        Returns:
+            The created UpgradeProposal
+        """
+        now = int(time.time())
+
+        # Determine upgrade type from version comparison
+        target = ProtocolVersion.from_string(target_version)
+        if target.major > CURRENT_VERSION.major:
+            upgrade_type = UpgradeType.MAJOR
+        elif target.minor > CURRENT_VERSION.minor:
+            upgrade_type = UpgradeType.MINOR
+        else:
+            upgrade_type = UpgradeType.PATCH
+
+        proposal = UpgradeProposal(
+            proposal_id=proposal_id,
+            target_version=target_version,
+            upgrade_type=upgrade_type,
+            title=title,
+            description=description,
+            features=features or [],
+            breaking_changes=breaking_changes or [],
+            migration_notes=migration_notes,
+            grace_period_days=grace_period_days,
+            status=UpgradeStatus.PROPOSED,
+            proposed_at=now,
+        )
+
+        self._proposals[proposal_id] = proposal
+        self._save_local_data()
+
+        # Notify callbacks
+        for callback in self._on_upgrade_proposed_callbacks:
+            try:
+                callback(proposal)
+            except Exception as e:
+                logger.warning(f"Upgrade proposed callback error: {e}")
+
+        # Broadcast notification
+        self._broadcast_notification(
+            proposal,
+            "proposed",
+            f"Protocol upgrade to v{target_version} proposed: {title}",
+            urgency="normal",
+        )
+
+        logger.info(f"Upgrade proposal registered: {proposal_id} -> v{target_version}")
+
+        return proposal
+
+    def approve_upgrade(self, proposal_id: str) -> bool:
+        """
+        Mark an upgrade as approved by governance.
+
+        Args:
+            proposal_id: Governance proposal ID
+
+        Returns:
+            True if approved
+        """
+        proposal = self._proposals.get(proposal_id)
+        if not proposal:
+            logger.warning(f"Upgrade proposal not found: {proposal_id}")
+            return False
+
+        now = int(time.time())
+        proposal.status = UpgradeStatus.APPROVED
+        proposal.approved_at = now
+
+        # Set activation time
+        proposal.activation_timestamp = now + (proposal.grace_period_days * 24 * 3600)
+
+        self._save_local_data()
+
+        # Notify callbacks
+        for callback in self._on_upgrade_approved_callbacks:
+            try:
+                callback(proposal)
+            except Exception as e:
+                logger.warning(f"Upgrade approved callback error: {e}")
+
+        # Broadcast notification
+        urgency = "high" if proposal.upgrade_type == UpgradeType.MAJOR else "normal"
+        self._broadcast_notification(
+            proposal,
+            "approved",
+            f"Protocol upgrade to v{proposal.target_version} APPROVED! "
+            f"Activates in {proposal.grace_period_days} days.",
+            urgency=urgency,
+        )
+
+        logger.info(f"Upgrade approved: {proposal_id} -> v{proposal.target_version}")
+
+        return True
+
+    def reject_upgrade(self, proposal_id: str) -> bool:
+        """Mark an upgrade as rejected by governance."""
+        proposal = self._proposals.get(proposal_id)
+        if not proposal:
+            return False
+
+        proposal.status = UpgradeStatus.REJECTED
+        self._save_local_data()
+
+        self._broadcast_notification(
+            proposal,
+            "rejected",
+            f"Protocol upgrade to v{proposal.target_version} was rejected.",
+            urgency="low",
+        )
+
+        logger.info(f"Upgrade rejected: {proposal_id}")
+        return True
+
+    def activate_upgrade(self, proposal_id: str) -> bool:
+        """
+        Activate an approved upgrade.
+
+        This should be called when the activation time is reached.
+
+        Args:
+            proposal_id: Governance proposal ID
+
+        Returns:
+            True if activated
+        """
+        proposal = self._proposals.get(proposal_id)
+        if not proposal:
+            return False
+
+        if proposal.status != UpgradeStatus.APPROVED:
+            logger.warning(f"Cannot activate non-approved upgrade: {proposal_id}")
+            return False
+
+        now = int(time.time())
+        proposal.status = UpgradeStatus.ACTIVE
+        proposal.activated_at = now
+
+        self._save_local_data()
+
+        # Notify callbacks
+        for callback in self._on_upgrade_activated_callbacks:
+            try:
+                callback(proposal)
+            except Exception as e:
+                logger.warning(f"Upgrade activated callback error: {e}")
+
+        # Broadcast notification
+        self._broadcast_notification(
+            proposal,
+            "activated",
+            f"Protocol upgrade to v{proposal.target_version} is NOW ACTIVE!",
+            urgency="critical",
+        )
+
+        logger.info(f"Upgrade ACTIVATED: {proposal_id} -> v{proposal.target_version}")
+
+        return True
+
+    # -------------------------------------------------------------------------
+    # Notification System
+    # -------------------------------------------------------------------------
+
+    def _broadcast_notification(
+        self,
+        proposal: UpgradeProposal,
+        notification_type: str,
+        message: str,
+        urgency: str = "normal",
+    ) -> None:
+        """Broadcast upgrade notification to network."""
+        import hashlib
+
+        notification = UpgradeNotification(
+            notification_id=hashlib.sha256(
+                f"{proposal.proposal_id}:{notification_type}:{time.time()}".encode()
+            ).hexdigest()[:16],
+            upgrade_proposal_id=proposal.proposal_id,
+            target_version=proposal.target_version,
+            notification_type=notification_type,
+            message=message,
+            timestamp=int(time.time()),
+            urgency=urgency,
+        )
+
+        self._notifications.append(notification)
+
+        # Broadcast to network
+        if self._peers:
+            try:
+                message_bytes = json.dumps({
+                    'type': 'upgrade_notification',
+                    'notification': notification.to_dict(),
+                }).encode()
+
+                import trio
+                trio.from_thread.run_sync(
+                    lambda: self._peers.broadcast(UPGRADE_NOTIFICATION_TOPIC, message_bytes)
+                )
+            except Exception as e:
+                logger.debug(f"Failed to broadcast upgrade notification: {e}")
+
+    def _on_upgrade_notification(self, topic: str, data: Any) -> None:
+        """Handle incoming upgrade notification from network."""
+        try:
+            if isinstance(data, bytes):
+                message = json.loads(data.decode())
+            elif isinstance(data, dict):
+                message = data
+            else:
+                return
+
+            if message.get('type') != 'upgrade_notification':
+                return
+
+            notification_data = message.get('notification', {})
+            if not notification_data:
+                return
+
+            notification = UpgradeNotification.from_dict(notification_data)
+
+            # Store if not duplicate
+            existing_ids = {n.notification_id for n in self._notifications}
+            if notification.notification_id not in existing_ids:
+                self._notifications.append(notification)
+                logger.info(
+                    f"Upgrade notification: {notification.message} "
+                    f"(urgency: {notification.urgency})"
+                )
+
+        except Exception as e:
+            logger.warning(f"Error handling upgrade notification: {e}")
+
+    # -------------------------------------------------------------------------
+    # Query Methods
+    # -------------------------------------------------------------------------
+
+    def get_pending_upgrades(self) -> List[UpgradeProposal]:
+        """Get all approved but not yet activated upgrades."""
+        return [
+            p for p in self._proposals.values()
+            if p.status == UpgradeStatus.APPROVED
+        ]
+
+    def get_active_upgrades(self) -> List[UpgradeProposal]:
+        """Get all activated upgrades."""
+        return [
+            p for p in self._proposals.values()
+            if p.status == UpgradeStatus.ACTIVE
+        ]
+
+    def check_pending_activations(self) -> List[UpgradeProposal]:
+        """
+        Check for upgrades ready to activate.
+
+        Call this periodically to trigger activations.
+
+        Returns:
+            List of proposals ready to activate
+        """
+        now = int(time.time())
+        ready = []
+
+        for proposal in self._proposals.values():
+            if proposal.status == UpgradeStatus.APPROVED:
+                if proposal.activation_timestamp > 0 and now >= proposal.activation_timestamp:
+                    ready.append(proposal)
+
+        return ready
+
+    def get_upgrade_status(self) -> Dict[str, Any]:
+        """Get overall upgrade status."""
+        pending = self.get_pending_upgrades()
+        ready = self.check_pending_activations()
+
+        return {
+            'current_version': PROTOCOL_VERSION,
+            'min_supported_version': MIN_SUPPORTED_VERSION,
+            'total_proposals': len(self._proposals),
+            'pending_upgrades': len(pending),
+            'ready_to_activate': len(ready),
+            'recent_notifications': len(self._notifications[-10:]),
+        }
+
+    def get_recent_notifications(self, limit: int = 20) -> List[UpgradeNotification]:
+        """Get recent upgrade notifications."""
+        return self._notifications[-limit:]
+
+    def should_warn_incompatibility(self, peer_version: str) -> Tuple[bool, str]:
+        """
+        Check if a peer's version will become incompatible with pending upgrade.
+
+        Args:
+            peer_version: Peer's current version
+
+        Returns:
+            (should_warn, warning_message)
+        """
+        pending = self.get_pending_upgrades()
+        if not pending:
+            return False, ""
+
+        try:
+            peer_v = ProtocolVersion.from_string(peer_version)
+        except ValueError:
+            return True, f"Invalid peer version: {peer_version}"
+
+        for proposal in pending:
+            target_v = ProtocolVersion.from_string(proposal.target_version)
+            if not peer_v.is_compatible_with(target_v):
+                days_left = (proposal.activation_timestamp - int(time.time())) // 86400
+                return True, (
+                    f"Peer running v{peer_version} will be incompatible after "
+                    f"v{proposal.target_version} activates in {days_left} days"
+                )
+
+        return False, ""
+
+    # -------------------------------------------------------------------------
+    # Callbacks
+    # -------------------------------------------------------------------------
+
+    def on_upgrade_proposed(self, callback: callable) -> None:
+        """Register callback for new upgrade proposals: callback(UpgradeProposal)."""
+        self._on_upgrade_proposed_callbacks.append(callback)
+
+    def on_upgrade_approved(self, callback: callable) -> None:
+        """Register callback for approved upgrades: callback(UpgradeProposal)."""
+        self._on_upgrade_approved_callbacks.append(callback)
+
+    def on_upgrade_activated(self, callback: callable) -> None:
+        """Register callback for activated upgrades: callback(UpgradeProposal)."""
+        self._on_upgrade_activated_callbacks.append(callback)

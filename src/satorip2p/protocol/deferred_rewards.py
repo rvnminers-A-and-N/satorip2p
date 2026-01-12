@@ -7,13 +7,23 @@ Handles reward deferral when treasury has insufficient funds:
 - Manages catch-up distributions when treasury is funded
 
 Works with TreasuryAlertManager to notify users of deferred status.
+
+Storage: Uses RedundantStorage for three-tier persistence:
+1. Memory cache - Fast access
+2. Local disk - Crash recovery
+3. DHT - Network redundancy and recovery
 """
 
 import time
 import logging
+import asyncio
 from dataclasses import dataclass, field, asdict
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, TYPE_CHECKING
 from enum import Enum
+from pathlib import Path
+
+if TYPE_CHECKING:
+    from .storage import DeferredRewardsStorage
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +112,11 @@ class DeferredRewardsManager:
     - Total deferred amounts
     - Round-level deferrals for batch processing
 
+    Storage:
+    - Uses RedundantStorage for three-tier persistence (memory + disk + DHT)
+    - Survives node restarts via disk persistence
+    - Recoverable from network via DHT replication
+
     Usage:
         manager = DeferredRewardsManager()
 
@@ -124,12 +139,73 @@ class DeferredRewardsManager:
             round_ids=[1234],
             tx_hash='abc123...',
         )
+
+        # Sync to DHT for network redundancy
+        await manager.sync_to_dht()
+
+        # Recover from DHT if local data lost
+        await manager.recover_from_dht()
     """
 
-    def __init__(self):
-        # In-memory storage (would be database in production)
+    def __init__(self, peers=None, storage_dir: Path = None):
+        # In-memory storage (fast access layer)
         self._deferred_rewards: Dict[str, List[DeferredReward]] = {}  # address -> rewards
         self._deferred_rounds: Dict[int, RoundDeferral] = {}  # round_id -> RoundDeferral
+
+        # Redundant storage backend (memory + disk + DHT)
+        self._storage: Optional["DeferredRewardsStorage"] = None
+        self._peers = peers
+        self._storage_dir = storage_dir
+        self._dht_sync_pending: bool = False
+
+    def set_peers(self, peers) -> None:
+        """Set P2P peers for DHT storage."""
+        self._peers = peers
+        if self._storage:
+            self._storage.set_peers(peers)
+
+    def set_storage(self, storage: "DeferredRewardsStorage") -> None:
+        """Set the redundant storage backend."""
+        self._storage = storage
+
+    async def initialize_storage(self) -> None:
+        """Initialize redundant storage and load persisted data."""
+        if self._storage is None:
+            from .storage import DeferredRewardsStorage
+            self._storage = DeferredRewardsStorage(
+                peers=self._peers,
+                storage_dir=self._storage_dir,
+            )
+
+        # Load any persisted data from disk/DHT
+        await self._load_from_storage()
+
+    async def _load_from_storage(self) -> None:
+        """Load deferred rewards from persistent storage."""
+        if not self._storage:
+            return
+
+        try:
+            # Get all stored addresses
+            all_keys = await self._storage.list_keys()
+            for key in all_keys:
+                rewards = await self._storage.get_rewards_for_address(key)
+                if rewards:
+                    self._deferred_rewards[key] = [
+                        DeferredReward(
+                            address=r.address,
+                            round_id=r.round_id,
+                            amount=r.amount,
+                            reason=r.reason,
+                            created_at=r.created_at,
+                            paid_at=r.paid_at,
+                            paid_tx_hash=r.paid_tx_hash,
+                        )
+                        for r in rewards
+                    ]
+            logger.info(f"Loaded {len(self._deferred_rewards)} addresses from storage")
+        except Exception as e:
+            logger.error(f"Failed to load from storage: {e}")
 
     def defer_round(
         self,
@@ -178,12 +254,33 @@ class DeferredRewardsManager:
         )
         self._deferred_rounds[round_id] = round_deferral
 
+        # Mark for DHT sync
+        self._dht_sync_pending = True
+
         logger.info(
             f"Deferred round {round_id}: {total_amount:.4f} SATORI "
             f"to {len(rewards)} recipients ({reason.value})"
         )
 
         return round_deferral
+
+    async def defer_round_async(
+        self,
+        round_id: int,
+        rewards: Dict[str, float],
+        reason: DeferralReason,
+    ) -> RoundDeferral:
+        """
+        Defer an entire round's rewards with immediate persistence.
+
+        Same as defer_round but also persists to storage immediately.
+        """
+        result = self.defer_round(round_id, rewards, reason)
+
+        # Persist to storage
+        await self._persist_to_storage()
+
+        return result
 
     def defer_single(
         self,
@@ -466,6 +563,138 @@ class DeferredRewardsManager:
                 del self._deferred_rewards[address]
 
         return removed
+
+    # =========================================================================
+    # DHT STORAGE METHODS
+    # =========================================================================
+
+    async def _persist_to_storage(self) -> None:
+        """Persist all deferred rewards to redundant storage."""
+        if not self._storage:
+            return
+
+        try:
+            from .storage import StoredDeferredReward
+
+            for address, rewards in self._deferred_rewards.items():
+                for reward in rewards:
+                    stored = StoredDeferredReward(
+                        address=reward.address,
+                        round_id=reward.round_id,
+                        amount=reward.amount,
+                        reason=reward.reason,
+                        created_at=reward.created_at,
+                        paid_at=reward.paid_at,
+                        paid_tx_hash=reward.paid_tx_hash,
+                    )
+                    await self._storage.add_reward(stored)
+
+            self._dht_sync_pending = False
+            logger.debug(f"Persisted {len(self._deferred_rewards)} addresses to storage")
+        except Exception as e:
+            logger.error(f"Failed to persist to storage: {e}")
+
+    async def sync_to_dht(self) -> int:
+        """
+        Sync deferred rewards to DHT for network redundancy.
+
+        Should be called periodically (e.g., every 5 minutes).
+
+        Returns:
+            Number of keys synced
+        """
+        if not self._storage:
+            return 0
+
+        # First persist any pending changes
+        if self._dht_sync_pending:
+            await self._persist_to_storage()
+
+        # Then sync to DHT
+        synced = await self._storage.sync_to_dht()
+        logger.info(f"Synced {synced} deferred reward keys to DHT")
+        return synced
+
+    async def recover_from_dht(self) -> int:
+        """
+        Recover deferred rewards from DHT if local data is missing/corrupted.
+
+        Called on startup if local storage is empty or verification fails.
+
+        Returns:
+            Number of records recovered
+        """
+        if not self._storage:
+            return 0
+
+        # Get known addresses from memory
+        known_addresses = list(self._deferred_rewards.keys())
+
+        # Attempt recovery for each address
+        recovered = await self._storage.recover_from_dht(known_addresses)
+
+        if recovered > 0:
+            # Reload from storage
+            await self._load_from_storage()
+            logger.info(f"Recovered {recovered} deferred reward records from DHT")
+
+        return recovered
+
+    async def verify_data_integrity(self) -> Dict[str, Any]:
+        """
+        Verify local data against DHT to detect manipulation.
+
+        Returns:
+            Dict with verification results
+        """
+        if not self._storage:
+            return {'status': 'no_storage', 'verified': False}
+
+        results = {
+            'status': 'ok',
+            'verified': True,
+            'local_count': len(self._deferred_rewards),
+            'discrepancies': [],
+        }
+
+        try:
+            unpaid = self.get_unpaid_rewards()
+            local_total = sum(r.amount for r in unpaid)
+
+            # Get from DHT storage
+            dht_total = await self._storage.get_total_deferred()
+
+            # Compare totals (allow small tolerance for sync delays)
+            if abs(local_total - dht_total) > 0.0001:
+                results['discrepancies'].append({
+                    'type': 'total_mismatch',
+                    'local': local_total,
+                    'dht': dht_total,
+                    'diff': local_total - dht_total,
+                })
+                results['verified'] = False
+                results['status'] = 'mismatch'
+
+        except Exception as e:
+            results['status'] = 'error'
+            results['verified'] = False
+            results['error'] = str(e)
+
+        return results
+
+    def get_storage_stats(self) -> Dict[str, Any]:
+        """Get storage statistics."""
+        stats = {
+            'in_memory_addresses': len(self._deferred_rewards),
+            'in_memory_rewards': sum(len(r) for r in self._deferred_rewards.values()),
+            'dht_sync_pending': self._dht_sync_pending,
+            'storage_enabled': self._storage is not None,
+        }
+
+        if self._storage:
+            stats['storage_stats'] = self._storage.get_stats()
+
+        return stats
 
 
 # =============================================================================

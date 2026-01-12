@@ -7,6 +7,11 @@ Handles network-wide alerts for treasury edge cases:
 - Critical treasury states
 
 Broadcasts alerts via PubSub and provides API for querying status.
+
+Storage: Uses RedundantStorage for three-tier persistence:
+1. Memory cache - Fast access
+2. Local disk - Crash recovery
+3. DHT - Network redundancy and recovery
 """
 
 import time
@@ -14,7 +19,11 @@ import logging
 import hashlib
 from enum import Enum
 from dataclasses import dataclass, field, asdict
-from typing import Optional, List, Dict, Any, Callable
+from typing import Optional, List, Dict, Any, Callable, TYPE_CHECKING
+from pathlib import Path
+
+if TYPE_CHECKING:
+    from .storage import AlertStorage
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +176,11 @@ class TreasuryAlertManager:
     - EVR balance is too low for transaction fees
     - Both are critically low
 
+    Storage:
+    - Uses RedundantStorage for three-tier persistence (memory + disk + DHT)
+    - Alert history survives node restarts
+    - Active alerts recoverable from network
+
     Usage:
         manager = TreasuryAlertManager(peers, treasury_address)
         manager.set_balance_getter(get_balances_func)
@@ -176,6 +190,12 @@ class TreasuryAlertManager:
 
         # Subscribe to alerts
         manager.on_alert(callback)
+
+        # Sync to DHT for network redundancy
+        await manager.sync_to_dht()
+
+        # Recover from DHT if local data lost
+        await manager.recover_from_dht()
     """
 
     def __init__(
@@ -183,10 +203,12 @@ class TreasuryAlertManager:
         peers=None,
         treasury_address: str = None,
         donate_url: str = 'https://satorinet.io/donate',
+        storage_dir: Path = None,
     ):
         self._peers = peers
         self._treasury_address = treasury_address
         self._donate_url = donate_url
+        self._storage_dir = storage_dir
 
         # Balance getter function (injected)
         self._get_balances: Optional[Callable[[], Dict[str, float]]] = None
@@ -201,16 +223,24 @@ class TreasuryAlertManager:
         self._total_deferred_rewards: float = 0.0
         self._last_successful_distribution: Optional[int] = None
 
+        # Redundant storage backend
+        self._storage: Optional["AlertStorage"] = None
+        self._dht_sync_pending: bool = False
+
         # Subscribe to incoming alerts if peers available
         if self._peers:
             self._peers.subscribe(TOPIC_TREASURY_ALERTS, self._on_alert_received)
 
     async def start(self) -> None:
-        """Start the alert manager (no-op, subscription happens in __init__)."""
-        pass
+        """Start the alert manager and initialize storage."""
+        await self.initialize_storage()
 
     async def stop(self) -> None:
-        """Stop the alert manager."""
+        """Stop the alert manager and sync to DHT."""
+        # Final sync before shutdown
+        if self._storage and self._dht_sync_pending:
+            await self.sync_to_dht()
+
         if self._peers:
             self._peers.unsubscribe(TOPIC_TREASURY_ALERTS)
 
@@ -219,6 +249,71 @@ class TreasuryAlertManager:
         self._peers = peers
         if peers:
             peers.subscribe(TOPIC_TREASURY_ALERTS, self._on_alert_received)
+        if self._storage:
+            self._storage.set_peers(peers)
+
+    def set_storage(self, storage: "AlertStorage") -> None:
+        """Set the redundant storage backend."""
+        self._storage = storage
+
+    async def initialize_storage(self) -> None:
+        """Initialize redundant storage and load persisted data."""
+        if self._storage is None:
+            from .storage import AlertStorage
+            self._storage = AlertStorage(
+                peers=self._peers,
+                storage_dir=self._storage_dir,
+            )
+
+        # Load any persisted data from disk/DHT
+        await self._load_from_storage()
+
+    async def _load_from_storage(self) -> None:
+        """Load alerts from persistent storage."""
+        if not self._storage:
+            return
+
+        try:
+            # Load active alerts
+            stored_active = await self._storage.get_active_alerts()
+            self._active_alerts = [
+                TreasuryAlert(
+                    alert_id=a.alert_id,
+                    alert_type=a.alert_type,
+                    severity=a.severity,
+                    message=a.message,
+                    details=a.details,
+                    action="",  # Legacy field
+                    timestamp=a.timestamp,
+                )
+                for a in stored_active
+            ]
+
+            # Load history
+            stored_history = await self._storage.get_history(limit=100)
+            self._alert_history = [
+                AlertHistoryEntry(
+                    alert=TreasuryAlert(
+                        alert_id=a.alert_id,
+                        alert_type=a.alert_type,
+                        severity=a.severity,
+                        message=a.message,
+                        details=a.details,
+                        action="",
+                        timestamp=a.timestamp,
+                    ),
+                    resolved_at=a.resolved_at,
+                    resolution=a.resolution,
+                )
+                for a in stored_history
+            ]
+
+            logger.info(
+                f"Loaded {len(self._active_alerts)} active alerts, "
+                f"{len(self._alert_history)} history from storage"
+            )
+        except Exception as e:
+            logger.error(f"Failed to load from storage: {e}")
 
     def set_treasury_address(self, address: str) -> None:
         """Set the treasury address."""
@@ -600,6 +695,9 @@ class TreasuryAlertManager:
         # Add to history
         self._alert_history.append(AlertHistoryEntry(alert=alert))
 
+        # Persist to storage
+        await self._persist_alert_to_storage(alert)
+
         # Broadcast via P2P
         if self._peers:
             try:
@@ -610,6 +708,27 @@ class TreasuryAlertManager:
                 logger.info(f"Broadcast alert: {alert.alert_type}")
             except Exception as e:
                 logger.error(f"Failed to broadcast alert: {e}")
+
+    async def _persist_alert_to_storage(self, alert: TreasuryAlert) -> None:
+        """Persist alert to redundant storage."""
+        if not self._storage:
+            return
+
+        try:
+            from .storage import StoredAlert
+
+            stored = StoredAlert(
+                alert_id=alert.alert_id,
+                alert_type=alert.alert_type,
+                severity=alert.severity,
+                message=alert.message,
+                details=alert.details,
+                timestamp=alert.timestamp,
+            )
+            await self._storage.add_active_alert(stored)
+            self._dht_sync_pending = True
+        except Exception as e:
+            logger.error(f"Failed to persist alert: {e}")
 
     async def broadcast_alert(self, alert: TreasuryAlert) -> None:
         """Public method to broadcast a custom alert."""
@@ -657,6 +776,100 @@ class TreasuryAlertManager:
             'total_deferred_rewards': self._total_deferred_rewards,
             'last_successful_distribution': self._last_successful_distribution,
         }
+
+    # =========================================================================
+    # DHT STORAGE METHODS
+    # =========================================================================
+
+    async def sync_to_dht(self) -> int:
+        """
+        Sync alerts to DHT for network redundancy.
+
+        Should be called periodically (e.g., every 5 minutes).
+
+        Returns:
+            Number of keys synced
+        """
+        if not self._storage:
+            return 0
+
+        synced = await self._storage.sync_to_dht()
+        self._dht_sync_pending = False
+        logger.info(f"Synced {synced} alert keys to DHT")
+        return synced
+
+    async def recover_from_dht(self) -> int:
+        """
+        Recover alerts from DHT if local data is missing/corrupted.
+
+        Called on startup if local storage is empty.
+
+        Returns:
+            Number of records recovered
+        """
+        if not self._storage:
+            return 0
+
+        # Attempt recovery
+        recovered = await self._storage.recover_from_dht(["active", "history"])
+
+        if recovered > 0:
+            # Reload from storage
+            await self._load_from_storage()
+            logger.info(f"Recovered {recovered} alert records from DHT")
+
+        return recovered
+
+    async def resolve_alert_with_storage(
+        self,
+        alert_type: str,
+        resolution: str = "resolved",
+    ) -> bool:
+        """
+        Resolve an alert and persist to storage.
+
+        Args:
+            alert_type: Type of alert to resolve
+            resolution: Resolution message
+
+        Returns:
+            True if alert was resolved
+        """
+        # Update local state
+        resolved = False
+        for i, alert in enumerate(self._active_alerts):
+            if alert.alert_type == alert_type:
+                self._active_alerts.pop(i)
+                self._alert_history.append(
+                    AlertHistoryEntry(
+                        alert=alert,
+                        resolved_at=int(time.time()),
+                        resolution=resolution,
+                    )
+                )
+                resolved = True
+                break
+
+        # Persist to storage
+        if resolved and self._storage:
+            await self._storage.resolve_alert(alert_type, resolution)
+            self._dht_sync_pending = True
+
+        return resolved
+
+    def get_storage_stats(self) -> dict:
+        """Get storage statistics."""
+        stats = {
+            'in_memory_active': len(self._active_alerts),
+            'in_memory_history': len(self._alert_history),
+            'dht_sync_pending': self._dht_sync_pending,
+            'storage_enabled': self._storage is not None,
+        }
+
+        if self._storage:
+            stats['storage_stats'] = self._storage.get_stats()
+
+        return stats
 
 
 # =============================================================================

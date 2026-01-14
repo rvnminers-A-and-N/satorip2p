@@ -128,7 +128,8 @@ class SubscriptionManager:
                 if success:
                     logger.info(f"Subscription advertised successfully: stream_id={stream_id_str}")
                 else:
-                    logger.warning(f"Subscription advertisement returned false: stream_id={stream_id_str}")
+                    # This is expected when no other peers are connected yet
+                    logger.debug(f"Subscription advertisement returned false (no peers yet): stream_id={stream_id_str}")
                 return success
             except Exception as e:
                 logger.warning(f"Failed to announce subscription to DHT: {e}")

@@ -159,6 +159,18 @@ class RewardAddressManager:
         # Callbacks for updates
         self._update_callbacks: List[Callable] = []
 
+        self._started = False
+
+    async def start(self) -> None:
+        """Start the reward address manager (no-op, for interface consistency)."""
+        self._started = True
+        logger.info("RewardAddressManager started")
+
+    async def stop(self) -> None:
+        """Stop the reward address manager."""
+        self._started = False
+        logger.info("RewardAddressManager stopped")
+
     # ========================================================================
     # PUBLIC API
     # ========================================================================

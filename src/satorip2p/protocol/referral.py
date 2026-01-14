@@ -256,6 +256,18 @@ class ReferralManager:
         self._tier_callbacks: List[Callable] = []
         self._referral_callbacks: List[Callable] = []
 
+        self._started = False
+
+    async def start(self) -> None:
+        """Start the referral manager (no-op, for interface consistency)."""
+        self._started = True
+        logger.info("ReferralManager started")
+
+    async def stop(self) -> None:
+        """Stop the referral manager."""
+        self._started = False
+        logger.info("ReferralManager stopped")
+
     # ========================================================================
     # PUBLIC API - NEW USER
     # ========================================================================

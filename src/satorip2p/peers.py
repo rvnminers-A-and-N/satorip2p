@@ -803,21 +803,58 @@ class Peers:
                                     # Check if it worked
                                     if peer_id in self._pubsub.peers:
                                         logger.info(f"Mesh repair: successfully added peer {peer_id} to pubsub")
+                                        # Start reading from the stream to receive their subscriptions
+                                        # py-libp2p's _handle_new_peer sends our hello but doesn't read responses
+                                        stream = self._pubsub.peers.get(peer_id)
+                                        if stream and hasattr(self._pubsub, 'continuously_read_stream'):
+                                            # Spawn read loop in background - don't await, let it run
+                                            if self._nursery:
+                                                self._nursery.start_soon(
+                                                    self._pubsub.continuously_read_stream, stream
+                                                )
+                                                logger.debug(f"Mesh repair: started read loop for {peer_id}")
                                     else:
                                         logger.debug(f"Mesh repair: _handle_new_peer did not add {peer_id}")
                             except Exception as e:
                                 logger.debug(f"Mesh repair: could not add {peer_id} to pubsub: {e}")
 
-                    # Step 2: Graft connected peers to mesh if they're in peer_topics but not in mesh
-                    # This ensures all connected peers that subscribe to a topic are in our mesh
+                    # Step 1.5: Re-send our subscriptions to all pubsub peers
+                    # This forces subscription exchange - peers who haven't sent us their
+                    # subscriptions yet will receive ours and (should) respond with theirs
+                    if hasattr(self._pubsub, 'get_hello_packet') and hasattr(self._pubsub, 'peers'):
+                        hello = self._pubsub.get_hello_packet()
+                        if hello.subscriptions:
+                            hello_bytes = hello.SerializeToString()
+                            peers_sent = 0
+                            for peer_id, stream in list(self._pubsub.peers.items()):
+                                try:
+                                    from libp2p.io.utils import encode_varint_prefixed
+                                    await stream.write(encode_varint_prefixed(hello_bytes))
+                                    peers_sent += 1
+                                except Exception as e:
+                                    logger.debug(f"Mesh repair: failed to send hello to {peer_id}: {e}")
+                            if peers_sent > 0:
+                                logger.debug(f"Mesh repair: re-sent subscriptions to {peers_sent} peer(s)")
+
+                    # Step 2: Directly add all connected pubsub peers to mesh for all our topics
+                    # Since peer_topics may be empty (py-libp2p bug), we optimistically add
+                    # all pubsub peers to the mesh - they can PRUNE if not interested
                     connected_set = set(connected_peer_ids)
+                    pubsub_peer_set = set(self._pubsub.peers.keys()) if hasattr(self._pubsub, 'peers') else set()
                     for topic in list(router.mesh.keys()):
                         mesh_peers = router.mesh.get(topic, set())
                         mesh_size = len(mesh_peers)
-                        peer_topics = self._pubsub.peer_topics.get(topic, set())
+                        peer_topics_for_topic = self._pubsub.peer_topics.get(topic, set())
 
-                        # Find connected peers that are subscribed to this topic but not in our mesh
-                        connected_subscribers = peer_topics & connected_set
+                        # Try peer_topics first (if available), otherwise use all pubsub peers
+                        if peer_topics_for_topic:
+                            # We know what peers are subscribed - use that
+                            connected_subscribers = peer_topics_for_topic & connected_set
+                        else:
+                            # peer_topics is empty - optimistically add all pubsub peers
+                            # They will PRUNE if they're not interested in this topic
+                            connected_subscribers = pubsub_peer_set & connected_set
+
                         missing = connected_subscribers - mesh_peers
 
                         if missing:

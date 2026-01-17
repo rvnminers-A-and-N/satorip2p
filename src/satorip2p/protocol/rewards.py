@@ -133,26 +133,26 @@ RELAY_UPTIME_THRESHOLD = 0.95  # 95% uptime required for bonus
 # ============================================================================
 #
 # Rewards are primarily based on PREDICTION ACCURACY, not stake amount.
-# However, staking above the minimum (50 SATORI) provides small bonuses.
+# However, staking above the minimum (250 SATORI) provides small bonuses.
 #
 # Formula: reward = score × total_multiplier / total_weighted
 #
 # | Stake    | Bonus |
 # |----------|-------|
-# | 50       | 0%    |
-# | 51       | +5%   |
-# | 52       | +10%  |
-# | 53       | +15%  |
-# | 54       | +20%  |
-# | 55+      | +25%  |
+# | 250      | 0%    |
+# | 260      | +5%   |
+# | 270      | +10%  |
+# | 280      | +15%  |
+# | 290      | +20%  |
+# | 300+     | +25%  |
 #
 # This rewards staking slightly above minimum without incentivizing
-# consolidation. Running multiple nodes at 55 SATORI each is always
+# consolidation. Running multiple nodes at 300 SATORI each is always
 # better than stacking more on one node.
 
-MIN_STAKE = 50                      # Minimum stake to participate
-STAKE_BONUS_PER_SATORI = 0.05       # +5% per SATORI above minimum
-STAKE_BONUS_CAP = 0.25              # Maximum +25% stake bonus (reached at 55 SATORI)
+MIN_STAKE = 250                     # Minimum stake to participate
+STAKE_BONUS_PER_SATORI = 0.005      # +0.5% per SATORI above minimum
+STAKE_BONUS_CAP = 0.25              # Maximum +25% stake bonus (reached at 300 SATORI)
 
 
 # ============================================================================
@@ -670,19 +670,19 @@ def calculate_stake_bonus(stake: float) -> float:
     """
     Calculate stake bonus for amounts above minimum.
 
-    Provides +5% bonus per SATORI above the 50 SATORI minimum,
-    capped at +25% total (reached at 55 SATORI).
+    Provides +0.5% bonus per SATORI above the 250 SATORI minimum,
+    capped at +25% total (reached at 300 SATORI).
 
     This rewards staking slightly above minimum without incentivizing
     consolidation over running multiple nodes.
 
     Examples:
-        50 SATORI  -> 0% bonus (minimum)
-        51 SATORI  -> +5% bonus
-        52 SATORI  -> +10% bonus
-        53 SATORI  -> +15% bonus
-        54 SATORI  -> +20% bonus
-        55+ SATORI -> +25% bonus (capped)
+        250 SATORI  -> 0% bonus (minimum)
+        260 SATORI  -> +5% bonus
+        270 SATORI  -> +10% bonus
+        280 SATORI  -> +15% bonus
+        290 SATORI  -> +20% bonus
+        300+ SATORI -> +25% bonus (capped)
 
     Args:
         stake: Amount of SATORI staked
@@ -1227,7 +1227,7 @@ class SatoriScorer:
     }
 
     # Inhibitor configuration
-    MIN_STAKE = 50             # Minimum stake to participate (Satori network requirement)
+    MIN_STAKE = 250            # Minimum stake to participate (Satori network requirement)
     BLACKLIST: Set[str] = set()  # Blacklisted addresses
 
     # Scoring parameters
@@ -1674,14 +1674,14 @@ class RewardCalculator:
         Distribute reward pool using PREDICTION-CENTRIC model.
 
         IMPORTANT: Predictions are the PRIMARY factor for rewards.
-        Stake provides a SMALL bonus (+5% per 50 SATORI above minimum),
+        Stake provides a SMALL bonus (+5% per SATORI above minimum),
         NOT proportional scaling.
 
         The formula is:
         Your Reward = (Score × Total_Multiplier) / Sum(All Weighted Scores) × Pool
 
         Where Total_Multiplier combines additive bonuses + slashing gate:
-        - stake_bonus: +5% per 50 SATORI above 50 minimum, capped at +25%
+        - stake_bonus: +0.5% per SATORI above 250 minimum, capped at +25% (at 300)
         - role_bonus: +5% relay, +10% oracle, +15% signer, capped at +30%
         - referral_bonus: +2% to +15% based on referral tier
         - pool_diversity_bonus: +2% to +10% for smaller pools

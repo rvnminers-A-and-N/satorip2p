@@ -903,9 +903,9 @@ class P2PSatoriServerClient:
         Check if user has sufficient stake to earn rewards.
 
         Returns:
-            True if SATORI balance >= 50 (minimum stake requirement)
+            True if SATORI balance >= 250 (minimum stake requirement)
         """
-        MIN_STAKE_THRESHOLD = 50.0  # Must have 50+ SATORI to earn rewards
+        MIN_STAKE_THRESHOLD = 250.0  # Must have 250+ SATORI to earn rewards
 
         # Try P2P first - check wallet balance directly
         if self.wallet and self._mode in (NetworkingMode.HYBRID, NetworkingMode.P2P_ONLY):

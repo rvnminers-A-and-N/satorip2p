@@ -80,8 +80,8 @@ APPROVAL_CRITICAL = 0.67              # 67% for critical changes
 
 # Proposal limits
 MAX_ACTIVE_PROPOSALS = 10             # Maximum concurrent proposals
-MIN_STAKE_TO_PROPOSE = 50             # Minimum SATORI stake to create proposal
-MIN_STAKE_TO_VOTE = 10                # Minimum SATORI stake to vote
+MIN_STAKE_TO_PROPOSE = 250            # Minimum SATORI stake to create proposal
+MIN_STAKE_TO_VOTE = 50                # Minimum SATORI stake to vote
 
 # Voting power weights
 STAKE_WEIGHT = 1.0                    # Base weight per SATORI staked

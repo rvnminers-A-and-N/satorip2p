@@ -2498,10 +2498,10 @@ class Peers:
 
         return {
             "is_server": self.rendezvous_is_server,
-            "current_peer": current_peer[:16] + "..." if current_peer else None,
+            "current_peer": str(current_peer) if current_peer else None,
             "backup_count": len(self._rendezvous_backup_peers),
             "peers_by_latency": [
-                {"peer_id": p[:16] + "...", "latency_ms": round(l, 1)}
+                {"peer_id": str(p), "latency_ms": round(l, 1)}
                 for p, l in self._rendezvous_peers_by_latency[:5]  # Top 5
             ],
         }

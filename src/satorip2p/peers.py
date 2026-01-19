@@ -1515,12 +1515,21 @@ class Peers:
             import time
             current_time = time.time()
             backoff_info = {}
-            for (peer_id, topic), expiry in self._pubsub.router.back_off.items():
-                key = f"{str(peer_id)}:{topic}"
-                backoff_info[key] = {
-                    "expires_in": round(expiry - current_time, 1),
-                    "expired": expiry < current_time
-                }
+            try:
+                for key, expiry in self._pubsub.router.back_off.items():
+                    # Key format varies by py-libp2p version
+                    # Could be (peer_id, topic) tuple or just peer_id
+                    if isinstance(key, tuple) and len(key) == 2:
+                        peer_id, topic = key
+                        key_str = f"{str(peer_id)}:{topic}"
+                    else:
+                        key_str = str(key)
+                    backoff_info[key_str] = {
+                        "expires_in": round(expiry - current_time, 1),
+                        "expired": expiry < current_time
+                    }
+            except Exception as e:
+                logger.debug(f"Failed to parse backoff state: {e}")
             result["backoff"] = backoff_info
 
         # Get fanout state

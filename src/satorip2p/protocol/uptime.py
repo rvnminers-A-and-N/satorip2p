@@ -454,6 +454,10 @@ class UptimeTracker:
         self._on_heartbeat_received: Optional[Callable[[Heartbeat], None]] = None
         self._on_heartbeat_sent: Optional[Callable[[Heartbeat], None]] = None
 
+        # Recent heartbeats storage for UI display (circular buffer)
+        self._recent_heartbeats: List[Heartbeat] = []
+        self._recent_heartbeats_max: int = 100  # Keep last 100 heartbeats
+
         # Subscribe to heartbeat topic if peers available
         if self.peers:
             self._setup_pubsub()
@@ -1017,6 +1021,12 @@ class UptimeTracker:
         # Store heartbeat timestamp
         self._heartbeats[heartbeat.round_id][heartbeat.node_id].append(heartbeat.timestamp)
 
+        # Store in recent heartbeats buffer for UI display
+        self._recent_heartbeats.append(heartbeat)
+        # Trim to max size (circular buffer behavior)
+        if len(self._recent_heartbeats) > self._recent_heartbeats_max:
+            self._recent_heartbeats = self._recent_heartbeats[-self._recent_heartbeats_max:]
+
         # Store node roles
         for role in heartbeat.roles:
             self._node_roles[heartbeat.node_id].add(role)
@@ -1195,6 +1205,24 @@ class UptimeTracker:
     def get_node_roles(self, node_id: str) -> Set[str]:
         """Get declared roles for a node."""
         return self._node_roles.get(node_id, set())
+
+    def get_recent_heartbeats(self, limit: int = 20) -> List[Heartbeat]:
+        """
+        Get recent heartbeats for UI display.
+
+        Args:
+            limit: Maximum number of heartbeats to return
+
+        Returns:
+            List of most recent Heartbeat objects, newest first
+        """
+        # Return most recent heartbeats, sorted by timestamp descending
+        sorted_heartbeats = sorted(
+            self._recent_heartbeats,
+            key=lambda h: h.timestamp,
+            reverse=True
+        )
+        return sorted_heartbeats[:limit]
 
     def get_uptime_streak(self, node_id: str) -> int:
         """

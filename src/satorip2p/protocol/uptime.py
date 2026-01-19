@@ -459,26 +459,38 @@ class UptimeTracker:
             self._setup_pubsub()
 
     async def _setup_pubsub_async(self) -> None:
-        """Subscribe to heartbeat and round sync PubSub topics (async version)."""
+        """Subscribe to heartbeat and round sync PubSub topics (async version).
+
+        Subscriptions are done sequentially with a small delay between them
+        to avoid race conditions in py-libp2p's GossipSub implementation.
+        """
         if not self.peers:
             return
 
+        import trio
+
+        # Subscribe to heartbeat topic first
         try:
-            # Subscribe to heartbeat topic
             await self.peers.subscribe_async(
                 HEARTBEAT_TOPIC,
                 self._handle_heartbeat_message
             )
             logger.info(f"Subscribed to heartbeat topic: {HEARTBEAT_TOPIC}")
+        except Exception as e:
+            logger.error(f"Failed to subscribe to heartbeat topic: {e}")
 
-            # Subscribe to round sync topic
+        # Small delay between subscriptions to let GossipSub stabilize
+        await trio.sleep(0.2)
+
+        # Subscribe to round sync topic
+        try:
             await self.peers.subscribe_async(
                 ROUND_SYNC_TOPIC,
                 self._handle_round_sync_message
             )
             logger.info(f"Subscribed to round sync topic: {ROUND_SYNC_TOPIC}")
         except Exception as e:
-            logger.error(f"Failed to setup PubSub subscriptions: {e}")
+            logger.error(f"Failed to subscribe to round sync topic: {e}")
 
     def _setup_pubsub(self) -> None:
         """Subscribe to heartbeat PubSub topic (sync fallback - limited)."""

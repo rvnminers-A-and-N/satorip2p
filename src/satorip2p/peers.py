@@ -158,6 +158,10 @@ class Peers:
         self._my_subscriptions: Set[str] = set()
         self._my_publications: Set[str] = set()
 
+        # Failed subscription tracking for retry/recovery
+        self._failed_subscriptions: Dict[str, int] = {}  # topic -> retry count
+        self._subscription_lock = None  # trio.Lock for serializing subscriptions
+
         # Background task management (trio)
         self._cancel_scope: Optional[trio.CancelScope] = None
         self._nursery: Optional[trio.Nursery] = None
@@ -470,6 +474,10 @@ class Peers:
             # Start mesh repair task to fix py-libp2p GossipSub bug
             # where topics can end up with empty mesh due to race conditions
             nursery.start_soon(self._mesh_repair_task)
+
+            # Start subscription health check to recover failed subscriptions
+            # (handles race conditions in GossipSub subscribe)
+            nursery.start_soon(self.run_subscription_health_check)
 
             # Retrieve pending messages
             nursery.start_soon(self._retrieve_pending_messages)
@@ -2757,32 +2765,84 @@ class Peers:
                 except Exception as e:
                     logger.error(f"Callback error: {e}")
 
-    async def _subscribe_to_topic(self, topic: str, stream_id: str) -> None:
-        """Subscribe to a GossipSub topic."""
+    async def _subscribe_to_topic(
+        self,
+        topic: str,
+        stream_id: str,
+        max_retries: int = 3,
+        base_delay: float = 0.5,
+    ) -> bool:
+        """
+        Subscribe to a GossipSub topic with retry logic.
+
+        Uses exponential backoff and serializes subscriptions to avoid
+        race conditions in py-libp2p's GossipSub implementation.
+
+        Args:
+            topic: The GossipSub topic to subscribe to
+            stream_id: The stream ID associated with this topic
+            max_retries: Maximum number of retry attempts (default: 3)
+            base_delay: Base delay in seconds for exponential backoff (default: 0.5)
+
+        Returns:
+            True if subscription succeeded, False otherwise
+        """
         if not self._started:
             logger.debug(f"Cannot subscribe to {topic}: peers not started")
-            return
+            return False
 
         if not self._pubsub:
             logger.debug(f"Cannot subscribe to {topic}: pubsub not initialized")
-            return
+            return False
 
-        try:
-            # Subscribe returns a subscription object
-            subscription = await self._pubsub.subscribe(topic)
+        # Initialize lock if needed (must be done in async context)
+        if self._subscription_lock is None:
+            self._subscription_lock = trio.Lock()
 
-            # Store subscription for message processing
-            if not hasattr(self, '_topic_subscriptions'):
-                self._topic_subscriptions = {}
-            self._topic_subscriptions[topic] = subscription
+        # Serialize subscriptions to avoid race condition in GossipSub
+        async with self._subscription_lock:
+            for attempt in range(max_retries + 1):
+                try:
+                    # Subscribe returns a subscription object
+                    subscription = await self._pubsub.subscribe(topic)
 
-            logger.info(f"Subscribed to {topic}")
+                    # Store subscription for message processing
+                    if not hasattr(self, '_topic_subscriptions'):
+                        self._topic_subscriptions = {}
+                    self._topic_subscriptions[topic] = subscription
 
-            # Note: Message processing is now handled by process_messages()
-            # which should be called in a trio nursery by the caller
+                    # Clear from failed subscriptions if it was there
+                    self._failed_subscriptions.pop(topic, None)
 
-        except Exception as e:
-            logger.warning(f"Failed to subscribe to topic {topic}: {e}")
+                    logger.info(f"Subscribed to {topic}")
+                    return True
+
+                except Exception as e:
+                    error_msg = str(e)
+                    is_race_condition = "dictionary changed size during iteration" in error_msg
+
+                    if attempt < max_retries:
+                        # Calculate exponential backoff delay
+                        delay = base_delay * (2 ** attempt)
+                        if is_race_condition:
+                            # Add extra jitter for race conditions
+                            import random
+                            delay += random.uniform(0.1, 0.5)
+
+                        logger.warning(
+                            f"Failed to subscribe to topic {topic} (attempt {attempt + 1}/{max_retries + 1}): {e}. "
+                            f"Retrying in {delay:.2f}s..."
+                        )
+                        await trio.sleep(delay)
+                    else:
+                        # All retries exhausted - track for background recovery
+                        self._failed_subscriptions[topic] = attempt + 1
+                        logger.error(
+                            f"Failed to subscribe to topic {topic} after {max_retries + 1} attempts: {e}. "
+                            f"Marking for background recovery."
+                        )
+
+        return False
 
     async def _unsubscribe_from_topic(self, topic: str) -> None:
         """Unsubscribe from a GossipSub topic."""
@@ -2793,6 +2853,96 @@ class Peers:
             await self._pubsub.unsubscribe(topic)
         except Exception as e:
             logger.debug(f"Failed to unsubscribe from topic: {e}")
+
+    async def recover_failed_subscriptions(self) -> int:
+        """
+        Attempt to recover any failed subscriptions.
+
+        This method retries subscriptions that previously failed due to
+        race conditions or other transient errors. It should be called
+        periodically by a health check task.
+
+        Returns:
+            Number of subscriptions successfully recovered
+        """
+        if not self._failed_subscriptions:
+            return 0
+
+        recovered = 0
+        # Copy keys to avoid modification during iteration
+        failed_topics = list(self._failed_subscriptions.keys())
+
+        for topic in failed_topics:
+            # Extract stream_id from topic (remove prefix)
+            stream_id = topic.replace(STREAM_TOPIC_PREFIX, "")
+
+            logger.info(f"Attempting to recover failed subscription: {topic}")
+
+            # Try to subscribe with extended retries
+            success = await self._subscribe_to_topic(
+                topic, stream_id, max_retries=5, base_delay=1.0
+            )
+
+            if success:
+                recovered += 1
+                logger.info(f"Successfully recovered subscription to {topic}")
+
+                # Start message processor for this subscription if we have a nursery
+                if self._nursery and stream_id in self._my_subscriptions:
+                    self._nursery.start_soon(self.process_messages, stream_id)
+            else:
+                logger.warning(f"Failed to recover subscription to {topic}")
+
+        if recovered > 0:
+            logger.info(f"Recovered {recovered}/{len(failed_topics)} failed subscriptions")
+
+        return recovered
+
+    async def run_subscription_health_check(self, interval: float = 60.0) -> None:
+        """
+        Background task that periodically checks and recovers failed subscriptions.
+
+        This task runs continuously and attempts to recover any subscriptions
+        that failed during startup or due to transient errors.
+
+        Args:
+            interval: How often to check for failed subscriptions (default: 60s)
+        """
+        logger.info(f"Subscription health check started (interval: {interval}s)")
+
+        while self._started:
+            try:
+                await trio.sleep(interval)
+
+                if self._failed_subscriptions:
+                    logger.debug(
+                        f"Health check: {len(self._failed_subscriptions)} failed subscriptions pending"
+                    )
+                    await self.recover_failed_subscriptions()
+
+            except trio.Cancelled:
+                logger.info("Subscription health check cancelled")
+                raise
+            except Exception as e:
+                logger.error(f"Subscription health check error: {e}")
+                await trio.sleep(interval)
+
+        logger.info("Subscription health check stopped")
+
+    def get_subscription_status(self) -> dict:
+        """
+        Get current subscription status including any failed subscriptions.
+
+        Returns:
+            Dict with subscription counts and failed subscription details
+        """
+        return {
+            "active_subscriptions": len(self._my_subscriptions),
+            "active_publications": len(self._my_publications),
+            "failed_subscriptions": len(self._failed_subscriptions),
+            "failed_topics": list(self._failed_subscriptions.keys()),
+            "topic_subscriptions": len(getattr(self, '_topic_subscriptions', {})),
+        }
 
     async def process_messages(self, stream_id: str) -> None:
         """

@@ -190,13 +190,13 @@ class StreamRegistry:
             return True
 
         try:
-            # Subscribe to stream announcements
+            # Subscribe to stream announcements with full network registration
             if self.peers._pubsub:
-                await self.peers.subscribe(
+                await self.peers.subscribe_async(
                     self.STREAM_TOPIC,
                     self._on_stream_received
                 )
-                await self.peers.subscribe(
+                await self.peers.subscribe_async(
                     self.CLAIM_TOPIC,
                     self._on_claim_received
                 )

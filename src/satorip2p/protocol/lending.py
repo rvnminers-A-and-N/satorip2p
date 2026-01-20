@@ -285,7 +285,7 @@ class LendingManager:
 
         for topic, handler in topics:
             try:
-                await self.peers.subscribe(topic, handler)
+                await self.peers.subscribe_async(topic, handler)
                 self._subscribed_topics.append(topic)
                 logger.debug(f"Subscribed to {topic}")
             except Exception as e:

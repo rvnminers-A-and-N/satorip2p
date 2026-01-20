@@ -176,9 +176,9 @@ class PredictionProtocol:
             return True
 
         try:
-            # Subscribe to score announcements
+            # Subscribe to score announcements with full network registration
             if self.peers._pubsub:
-                await self.peers.subscribe(
+                await self.peers.subscribe_async(
                     self.SCORE_TOPIC,
                     self._on_score_received
                 )
@@ -231,9 +231,9 @@ class PredictionProtocol:
         if stream_id not in self._subscribed_streams:
             self._subscribed_streams[stream_id] = []
 
-            # Subscribe to GossipSub topic
+            # Subscribe to GossipSub topic with full network registration
             if self.peers._pubsub:
-                await self.peers.subscribe(
+                await self.peers.subscribe_async(
                     topic,
                     lambda data: self._on_prediction_received(stream_id, data)
                 )

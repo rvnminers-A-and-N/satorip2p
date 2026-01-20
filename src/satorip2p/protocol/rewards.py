@@ -1977,7 +1977,7 @@ class RoundDataStore:
 
         if self.peers and self.peers._pubsub:
             try:
-                await self.peers.subscribe(topic, callback)
+                await self.peers.subscribe_async(topic, callback)
                 logger.debug(f"Subscribed to rewards for {stream_id}")
                 return True
             except Exception as e:

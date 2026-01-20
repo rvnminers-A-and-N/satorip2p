@@ -149,9 +149,9 @@ class PeerRegistry:
             return True
 
         try:
-            # Subscribe to peer announcements via GossipSub
+            # Subscribe to peer announcements via GossipSub with full network registration
             if self.peers._pubsub:
-                await self.peers.subscribe(
+                await self.peers.subscribe_async(
                     self.ANNOUNCE_TOPIC,
                     self._on_announcement_received
                 )

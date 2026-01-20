@@ -170,9 +170,9 @@ class OracleNetwork:
             return True
 
         try:
-            # Subscribe to oracle registry topic
+            # Subscribe to oracle registry topic with full network registration
             if self.peers._pubsub:
-                await self.peers.subscribe(
+                await self.peers.subscribe_async(
                     self.ORACLE_REGISTRY_TOPIC,
                     self._on_oracle_registration
                 )
@@ -311,9 +311,9 @@ class OracleNetwork:
         if stream_id not in self._subscribed_streams:
             self._subscribed_streams[stream_id] = []
 
-            # Subscribe to GossipSub topic
+            # Subscribe to GossipSub topic with full network registration
             if self.peers._pubsub:
-                await self.peers.subscribe(
+                await self.peers.subscribe_async(
                     topic,
                     lambda data: self._on_observation_received(stream_id, data)
                 )

@@ -235,7 +235,7 @@ class PredictionProtocol:
             if self.peers._pubsub:
                 await self.peers.subscribe_async(
                     topic,
-                    lambda data: self._on_prediction_received(stream_id, data)
+                    lambda sid, data, s=stream_id: self._on_prediction_received(s, data)
                 )
 
         self._subscribed_streams[stream_id].append(callback)
@@ -469,7 +469,7 @@ class PredictionProtocol:
             logger.warning(f"Failed to broadcast score: {e}")
             return prediction_score
 
-    async def _on_score_received(self, data: dict) -> None:
+    async def _on_score_received(self, stream_id: str, data: dict) -> None:
         """Handle received prediction score."""
         try:
             score = PredictionScore.from_dict(data)

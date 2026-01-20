@@ -262,7 +262,7 @@ class OracleNetwork:
             logger.debug(f"Oracle registration broadcast failed: {e}")
             return False
 
-    async def _on_oracle_registration(self, data: dict) -> None:
+    async def _on_oracle_registration(self, stream_id: str, data: dict) -> None:
         """Handle received oracle registration."""
         try:
             if data.get("type") != "register":
@@ -315,7 +315,7 @@ class OracleNetwork:
             if self.peers._pubsub:
                 await self.peers.subscribe_async(
                     topic,
-                    lambda data: self._on_observation_received(stream_id, data)
+                    lambda sid, data, s=stream_id: self._on_observation_received(s, data)
                 )
 
         self._subscribed_streams[stream_id].append(callback)

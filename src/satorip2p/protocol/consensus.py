@@ -224,7 +224,7 @@ class ConsensusManager:
         except Exception as e:
             logger.error(f"Failed to setup PubSub: {e}")
 
-    def _handle_vote_message(self, message: dict) -> None:
+    def _handle_vote_message(self, stream_id: str, message: dict) -> None:
         """Handle incoming vote from PubSub."""
         try:
             vote = ConsensusVote.from_dict(message)

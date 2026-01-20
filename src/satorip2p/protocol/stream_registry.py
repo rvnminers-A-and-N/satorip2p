@@ -379,7 +379,7 @@ class StreamRegistry:
             logger.debug(f"Stream broadcast failed: {e}")
             return False
 
-    async def _on_stream_received(self, data: dict) -> None:
+    async def _on_stream_received(self, stream_id: str, data: dict) -> None:
         """Handle received stream definition."""
         try:
             if data.get("type") != "stream":
@@ -522,7 +522,7 @@ class StreamRegistry:
             logger.debug(f"Claim broadcast failed: {e}")
             return False
 
-    async def _on_claim_received(self, data: dict) -> None:
+    async def _on_claim_received(self, stream_id: str, data: dict) -> None:
         """Handle received stream claim."""
         try:
             msg_type = data.get("type")

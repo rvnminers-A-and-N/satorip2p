@@ -684,7 +684,7 @@ class DelegationManager:
         except Exception as e:
             logger.error(f"Failed to broadcast charity update: {e}")
 
-    async def _on_delegation_message(self, data: dict) -> None:
+    async def _on_delegation_message(self, stream_id: str, data: dict) -> None:
         """Handle incoming delegation message."""
         try:
             if data.get("type") != "delegation":
@@ -719,7 +719,7 @@ class DelegationManager:
         except Exception as e:
             logger.error(f"Error handling delegation message: {e}")
 
-    async def _on_delegation_removal_message(self, data: dict) -> None:
+    async def _on_delegation_removal_message(self, stream_id: str, data: dict) -> None:
         """Handle incoming delegation removal message."""
         try:
             if data.get("type") != "delegation_removal":
@@ -748,7 +748,7 @@ class DelegationManager:
         except Exception as e:
             logger.error(f"Error handling delegation removal message: {e}")
 
-    async def _on_charity_update_message(self, data: dict) -> None:
+    async def _on_charity_update_message(self, stream_id: str, data: dict) -> None:
         """Handle incoming charity update message."""
         try:
             if data.get("type") != "charity_update":

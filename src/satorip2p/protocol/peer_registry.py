@@ -275,7 +275,7 @@ class PeerRegistry:
             logger.debug(f"Announcement broadcast failed: {e}")
             return False
 
-    async def _on_announcement_received(self, data: dict) -> None:
+    async def _on_announcement_received(self, stream_id: str, data: dict) -> None:
         """Handle received peer announcement."""
         try:
             announcement = PeerAnnouncement.from_dict(data)

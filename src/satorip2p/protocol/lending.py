@@ -792,7 +792,7 @@ class LendingManager:
         except Exception as e:
             logger.error(f"Failed to broadcast lend removal: {e}")
 
-    async def _on_pool_config_message(self, data: dict) -> None:
+    async def _on_pool_config_message(self, stream_id: str, data: dict) -> None:
         """Handle incoming pool config message."""
         try:
             if data.get("type") != "pool_config":
@@ -816,7 +816,7 @@ class LendingManager:
         except Exception as e:
             logger.error(f"Error handling pool config message: {e}")
 
-    async def _on_lend_registration_message(self, data: dict) -> None:
+    async def _on_lend_registration_message(self, stream_id: str, data: dict) -> None:
         """Handle incoming lend registration message."""
         try:
             if data.get("type") != "lend_registration":
@@ -847,7 +847,7 @@ class LendingManager:
         except Exception as e:
             logger.error(f"Error handling lend registration message: {e}")
 
-    async def _on_lend_removal_message(self, data: dict) -> None:
+    async def _on_lend_removal_message(self, stream_id: str, data: dict) -> None:
         """Handle incoming lend removal message."""
         try:
             if data.get("type") != "lend_removal":

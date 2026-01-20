@@ -883,11 +883,11 @@ class Peers:
                         logger.info(f"Mesh repair complete: {repairs_made} total peer(s) added across topics")
 
                     # Log current mesh status for visibility (get fresh counts)
-                    total_mesh_peers = sum(len(router.mesh.get(t, set())) for t in router.mesh.keys())
+                    total_topic_peer_slots = sum(len(router.mesh.get(t, set())) for t in router.mesh.keys())
                     total_topics = len(router.mesh)
                     current_pubsub_peers = len(self._pubsub.peers) if hasattr(self._pubsub, 'peers') else 0
                     connected_count = len(connected_peer_ids)
-                    logger.info(f"Mesh status: connected={connected_count}, pubsub={current_pubsub_peers}, topics={total_topics}, mesh_peers={total_mesh_peers}")
+                    logger.info(f"Mesh status: connected={connected_count}, pubsub={current_pubsub_peers}, topics={total_topics}, topic_peer_slots={total_topic_peer_slots}")
 
             except Exception as e:
                 logger.warning(f"Mesh repair task error: {e}")

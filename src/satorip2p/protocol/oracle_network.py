@@ -265,24 +265,28 @@ class OracleNetwork:
     async def _on_oracle_registration(self, stream_id: str, data: dict) -> None:
         """Handle received oracle registration."""
         try:
+            logger.info(f"_on_oracle_registration called: stream_id={stream_id}, data_type={data.get('type')}")
+
             if data.get("type") != "register":
+                logger.debug(f"Ignoring non-register message: type={data.get('type')}")
                 return
 
             registration = OracleRegistration.from_dict(data.get("data", {}))
 
             # Don't process our own registrations
             if registration.oracle == self.evrmore_address:
+                logger.debug(f"Ignoring own registration for stream_id={registration.stream_id}")
                 return
 
             # Store registration
-            stream_id = registration.stream_id
-            if stream_id not in self._oracle_registrations:
-                self._oracle_registrations[stream_id] = {}
-            self._oracle_registrations[stream_id][registration.oracle] = registration
+            reg_stream_id = registration.stream_id
+            if reg_stream_id not in self._oracle_registrations:
+                self._oracle_registrations[reg_stream_id] = {}
+            self._oracle_registrations[reg_stream_id][registration.oracle] = registration
 
-            logger.debug(
-                f"Received oracle registration for stream_id={stream_id} "
-                f"from oracle={registration.oracle}"
+            logger.info(
+                f"Stored oracle registration: stream_id={reg_stream_id} "
+                f"oracle={registration.oracle} (total known: {sum(len(v) for v in self._oracle_registrations.values())})"
             )
 
         except Exception as e:

@@ -203,6 +203,60 @@ class Peers:
         # Bandwidth tracking (optional, set via set_bandwidth_tracker)
         self._bandwidth_tracker = None
 
+        # Protocol references for role detection
+        self._oracle_network = None  # Set via set_oracle_network()
+        self._prediction_network = None  # Set via set_prediction_network() (future)
+
+    def set_oracle_network(self, oracle_network) -> None:
+        """Set the oracle network reference for role detection."""
+        self._oracle_network = oracle_network
+
+    def set_prediction_network(self, prediction_network) -> None:
+        """Set the prediction network reference for role detection."""
+        self._prediction_network = prediction_network
+
+    @property
+    def is_oracle(self) -> bool:
+        """Check if we're registered as an oracle for any stream."""
+        if self._oracle_network and hasattr(self._oracle_network, '_my_registrations'):
+            return len(self._oracle_network._my_registrations) > 0
+        return False
+
+    @property
+    def is_predictor(self) -> bool:
+        """Check if we're making predictions on any stream."""
+        # Future: check prediction_network for active predictions
+        if self._prediction_network and hasattr(self._prediction_network, '_my_predictions'):
+            return len(self._prediction_network._my_predictions) > 0
+        return False
+
+    @property
+    def roles(self) -> List[str]:
+        """
+        Get list of current roles for this node.
+
+        Roles are determined dynamically based on activity:
+        - 'node': Base role (always present)
+        - 'oracle': Publishing observations for streams
+        - 'predictor': Making predictions on streams
+        - 'relay': Acting as circuit relay
+        - 'signer': Participating in multi-sig (future)
+        """
+        roles = ["node"]  # Base role - everyone is at least a node
+
+        if self.is_oracle:
+            roles.append("oracle")
+
+        if self.is_predictor:
+            roles.append("predictor")
+
+        if self.is_relay:
+            roles.append("relay")
+
+        # Future: add signer, pool_operator, delegate roles
+
+        return roles
+
     # ========== Lifecycle ==========
 
     async def start(self) -> bool:

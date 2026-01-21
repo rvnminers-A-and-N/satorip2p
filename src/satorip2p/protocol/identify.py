@@ -354,10 +354,8 @@ class IdentifyProtocol:
         if not peer_id:
             return None
 
-        # Determine our roles
-        roles = ["predictor"]  # All nodes are predictors
-        if self._peers.is_relay:
-            roles.append("relay")
+        # Get roles dynamically from Peers (node, oracle, predictor, relay, etc.)
+        roles = self._peers.roles if hasattr(self._peers, 'roles') else ["node"]
 
         return PeerIdentity(
             peer_id=peer_id,

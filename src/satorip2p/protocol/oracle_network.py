@@ -144,6 +144,7 @@ class OracleNetwork:
         self._oracle_registrations: Dict[str, Dict[str, OracleRegistration]] = {}  # stream_id -> {oracle -> reg}
         self._my_registrations: Dict[str, OracleRegistration] = {}  # stream_id -> my registration
         self._observation_cache: Dict[str, List[Observation]] = {}  # stream_id -> recent observations
+        self._my_published_observations: List[Observation] = []  # Our published observations
         self._started = False
 
         # External callback for bridge integration (set by p2p_bridge)
@@ -491,6 +492,13 @@ class OracleNetwork:
         try:
             await self.peers.broadcast(topic, observation.to_dict())
             logger.debug(f"Published observation for stream_id={stream_id} value={value}")
+
+            # Store in our published observations cache
+            self._my_published_observations.append(observation)
+            # Keep only recent observations (max 100)
+            if len(self._my_published_observations) > 100:
+                self._my_published_observations = self._my_published_observations[-100:]
+
             return observation
         except Exception as e:
             logger.warning(f"Failed to publish observation: {e}")
@@ -521,6 +529,11 @@ class OracleNetwork:
         all_observations.sort(key=lambda o: o.timestamp, reverse=True)
         return all_observations[:limit]
 
+    def get_my_published_observations(self, limit: int = 50) -> List[Observation]:
+        """Get our own published observations, sorted by timestamp (newest first)."""
+        observations = self._my_published_observations[-limit:]
+        return list(reversed(observations))
+
     def get_registered_oracles(self, stream_id: str) -> List[OracleRegistration]:
         """Get registered oracles for a stream."""
         return list(self._oracle_registrations.get(stream_id, {}).values())
@@ -533,10 +546,16 @@ class OracleNetwork:
 
     def get_stats(self) -> dict:
         """Get oracle network statistics."""
+        # Count unique oracles (not registrations) by collecting unique oracle addresses
+        unique_oracles = set()
+        for stream_regs in self._oracle_registrations.values():
+            unique_oracles.update(stream_regs.keys())  # keys are oracle addresses
+
         return {
             "subscribed_streams": len(self._subscribed_streams),
             "my_oracle_registrations": len(self._my_registrations),
-            "known_oracles": sum(len(o) for o in self._oracle_registrations.values()),
+            "known_oracles": len(unique_oracles),
             "cached_observations": sum(len(o) for o in self._observation_cache.values()),
+            "my_published_observations": len(self._my_published_observations),
             "started": self._started,
         }

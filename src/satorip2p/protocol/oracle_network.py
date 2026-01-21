@@ -355,23 +355,25 @@ class OracleNetwork:
     async def _on_observation_received(self, stream_id: str, data: dict) -> None:
         """Handle received observation."""
         try:
+            logger.info(f"_on_observation_received: stream_id={stream_id}, data_keys={list(data.keys()) if isinstance(data, dict) else type(data)}")
             observation = Observation.from_dict(data)
 
             # Verify hash
             expected_hash = observation.compute_hash()
             if observation.hash != expected_hash:
-                logger.debug(f"Invalid observation hash from oracle={observation.oracle}")
+                logger.warning(f"Invalid observation hash from oracle={observation.oracle}: got {observation.hash}, expected {expected_hash}")
                 return
 
             # Verify signature
             if not await self._verify_observation(observation):
-                logger.debug(f"Invalid observation signature from oracle={observation.oracle}")
+                logger.warning(f"Invalid observation signature from oracle={observation.oracle}")
                 return
 
             # Cache observation
             if stream_id not in self._observation_cache:
                 self._observation_cache[stream_id] = []
             self._observation_cache[stream_id].append(observation)
+            logger.info(f"Cached observation: stream_id={stream_id}, value={observation.value}, oracle={observation.oracle} (cache size: {len(self._observation_cache[stream_id])})")
 
             # Trim cache
             if len(self._observation_cache[stream_id]) > self.MAX_CACHE_SIZE:
@@ -495,6 +497,15 @@ class OracleNetwork:
         """Get the most recent observation for a stream."""
         observations = self._observation_cache.get(stream_id, [])
         return observations[-1] if observations else None
+
+    def get_recent_observations(self, limit: int = 20) -> List[Observation]:
+        """Get recent observations across all streams, sorted by timestamp."""
+        all_observations = []
+        for stream_observations in self._observation_cache.values():
+            all_observations.extend(stream_observations)
+        # Sort by timestamp descending and limit
+        all_observations.sort(key=lambda o: o.timestamp, reverse=True)
+        return all_observations[:limit]
 
     def get_registered_oracles(self, stream_id: str) -> List[OracleRegistration]:
         """Get registered oracles for a stream."""

@@ -2998,7 +2998,10 @@ class Peers:
                     logger.info(f"Dispatching to {len(callbacks)} callback(s) for {stream_id}")
                     for callback in callbacks:
                         try:
-                            callback(stream_id, data)
+                            result = callback(stream_id, data)
+                            # Handle async callbacks
+                            if hasattr(result, '__await__') or hasattr(result, 'send'):
+                                await result
                         except Exception as e:
                             logger.error(f"Callback error for {stream_id}: {e}", exc_info=True)
                 else:

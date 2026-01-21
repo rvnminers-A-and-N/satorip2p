@@ -52,6 +52,7 @@ class Observation:
     value: Union[float, str]    # The observed value
     timestamp: int              # Unix timestamp of observation
     oracle: str                 # Evrmore address of oracle
+    peer_id: str = ""           # libp2p peer ID of oracle
     hash: str = ""              # Hash of the observation
     signature: str = ""         # Signed by oracle's wallet
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -74,6 +75,7 @@ class Observation:
     def from_dict(cls, data: dict) -> "Observation":
         """Create from dictionary."""
         data.setdefault("metadata", {})
+        data.setdefault("peer_id", "")  # Backward compatibility
         return cls(**data)
 
     def get_signing_message(self) -> str:
@@ -470,6 +472,7 @@ class OracleNetwork:
             value=value,
             timestamp=timestamp,
             oracle=self.evrmore_address,
+            peer_id=self.peer_id,
             metadata=metadata or {},
         )
 

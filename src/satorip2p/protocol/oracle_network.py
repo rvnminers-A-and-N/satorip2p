@@ -529,10 +529,9 @@ class OracleNetwork:
         all_observations.sort(key=lambda o: o.timestamp, reverse=True)
         return all_observations[:limit]
 
-    def get_my_published_observations(self, limit: int = 50) -> List[Observation]:
+    def get_my_published_observations(self) -> List[Observation]:
         """Get our own published observations, sorted by timestamp (newest first)."""
-        observations = self._my_published_observations[-limit:]
-        return list(reversed(observations))
+        return list(reversed(self._my_published_observations))
 
     def get_registered_oracles(self, stream_id: str) -> List[OracleRegistration]:
         """Get registered oracles for a stream."""

@@ -405,21 +405,32 @@ class OracleNetwork:
     async def _verify_observation(self, observation: Observation) -> bool:
         """Verify an observation's signature."""
         if observation.signature == "unsigned":
-            return True  # Development mode
+            logger.debug(f"Accepting unsigned observation from oracle={observation.oracle}")
+            return True  # Development mode - unsigned observations allowed
 
         if not observation.signature:
+            logger.debug(f"No signature on observation from oracle={observation.oracle}")
             return False
 
         try:
             message = observation.get_signing_message()
             if self.peers._identity_bridge:
-                return self.peers._identity_bridge.verify(
+                # Pass the oracle's address as 'address' parameter (not 'public_key')
+                # The signature contains enough info to recover pubkey and verify against address
+                result = self.peers._identity_bridge.verify(
                     message.encode(),
                     observation.signature.encode() if isinstance(observation.signature, str) else observation.signature,
-                    observation.oracle
+                    public_key=None,  # Let verification recover pubkey from signature
+                    address=observation.oracle  # Verify against oracle's Evrmore address
                 )
-        except Exception:
-            pass
+                if not result:
+                    logger.warning(f"Signature verification failed for oracle={observation.oracle}, sig_len={len(observation.signature)}")
+                else:
+                    logger.debug(f"Signature verified for oracle={observation.oracle}")
+                return result
+        except Exception as e:
+            logger.warning(f"Signature verification exception for oracle={observation.oracle}: {e}")
+            return False
 
         return False
 

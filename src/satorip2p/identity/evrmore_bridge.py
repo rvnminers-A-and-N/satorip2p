@@ -259,11 +259,13 @@ class EvrmoreIdentityBridge:
             return self._identity.verify(message, signature, public_key, address)
 
         # Use python-evrmorelib directly via our verify_message
+        # When verifying other nodes' signatures, public_key may be None
+        # and we must pass the other node's address (not our own)
         return verify_message(
             message=message,
             signature=signature,
-            pubkey=public_key or self.evrmore_pubkey,
-            address=address or self.evrmore_address,
+            pubkey=public_key,  # Can be None - verifyMessage will recover from signature
+            address=address,    # Must be provided for cross-node verification
         )
 
     def derive_shared_secret(self, peer_pubkey: str) -> bytes:

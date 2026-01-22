@@ -462,9 +462,9 @@ class OracleNetwork:
         """
         # Check if we're registered as oracle
         if stream_id not in self._my_registrations:
-            logger.warning(f"Not registered as oracle for stream_id={stream_id}")
-            # Auto-register
-            await self.register_as_oracle(stream_id)
+            logger.info(f"Auto-registering as primary oracle for stream_id={stream_id}")
+            # Auto-register as primary since we're the one publishing
+            await self.register_as_oracle(stream_id, is_primary=True)
 
         timestamp = timestamp or int(time.time())
 

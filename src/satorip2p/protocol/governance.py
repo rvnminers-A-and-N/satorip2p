@@ -1094,8 +1094,8 @@ class GovernanceProtocol:
             except Exception as e:
                 logger.debug(f"Failed to get stake from wallet: {e}")
 
-        # Fallback to default minimum
-        return 50.0
+        # No wallet balance found - return 0
+        return 0.0
 
     def _get_uptime_days(self) -> int:
         """Get our uptime streak in days."""

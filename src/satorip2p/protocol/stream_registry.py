@@ -66,6 +66,7 @@ class StreamDefinition:
     description: str = ""       # Human-readable description
     tags: List[str] = field(default_factory=list)  # Searchable tags
     metadata: Dict[str, Any] = field(default_factory=dict)  # Additional data
+    last_observation_time: int = 0  # Last time an observation was received (for activity filtering)
 
     @staticmethod
     def generate_stream_id(source: str, stream: str, target: str) -> str:
@@ -84,7 +85,22 @@ class StreamDefinition:
         data.setdefault("description", "")
         data.setdefault("tags", [])
         data.setdefault("metadata", {})
+        data.setdefault("last_observation_time", 0)
         return cls(**data)
+
+    def is_active(self, max_age_seconds: int = 900) -> bool:
+        """
+        Check if this stream has had recent oracle activity.
+
+        Args:
+            max_age_seconds: Maximum age of last observation (default 15 minutes)
+
+        Returns:
+            True if an observation was received within max_age_seconds
+        """
+        if self.last_observation_time == 0:
+            return False
+        return (time.time() - self.last_observation_time) < max_age_seconds
 
 
 @dataclass
@@ -104,11 +120,20 @@ class StreamClaim:
     expires: int = 0            # Expiration timestamp (0 = no expiry)
     stake: float = 0.0          # Optional stake amount (for priority)
 
-    def is_expired(self) -> bool:
-        """Check if claim has expired."""
+    def is_expired(self, grace_period: int = 0) -> bool:
+        """
+        Check if claim has expired.
+
+        Args:
+            grace_period: Additional seconds to add after expiry before
+                         considering it truly expired (for slot reuse)
+
+        Returns:
+            True if claim has expired (past expiry + grace period)
+        """
         if self.expires == 0:
             return False
-        return time.time() > self.expires
+        return time.time() > (self.expires + grace_period)
 
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
@@ -149,6 +174,10 @@ class StreamRegistry:
 
     # Default claim TTL (24 hours)
     DEFAULT_CLAIM_TTL = 86400
+
+    # Grace period before freeing expired slots (30 minutes)
+    # This gives predictors a chance to renew before losing their slot
+    CLAIM_GRACE_PERIOD = 1800
 
     def __init__(self, peers: "Peers"):
         """
@@ -303,7 +332,7 @@ class StreamRegistry:
         target: str,
         datatype: str = "numeric",
         cadence: int = 60,
-        predictor_slots: int = 10,
+        predictor_slots: int = 1000,
         description: str = "",
         tags: Optional[List[str]] = None
     ) -> Optional[StreamDefinition]:
@@ -467,15 +496,25 @@ class StreamRegistry:
         return claim
 
     def _find_available_slot(self, stream_id: str) -> int:
-        """Find first available slot for a stream."""
+        """
+        Find first available slot for a stream.
+
+        Slots are considered available if:
+        1. They have never been claimed, or
+        2. The claim has expired AND the grace period has passed
+
+        The grace period gives predictors a chance to renew their claims
+        before losing their slot to another predictor.
+        """
         claims = self._claims.get(stream_id, {})
 
         # Find first unclaimed slot
         slot = 0
         while slot in claims:
             claim = claims[slot]
-            if claim.is_expired():
-                break  # Expired claim, can reuse slot
+            # Only consider slot available if expired AND past grace period
+            if claim.is_expired(self.CLAIM_GRACE_PERIOD):
+                break  # Expired + grace period passed, can reuse slot
             slot += 1
 
         return slot
@@ -509,6 +548,55 @@ class StreamRegistry:
 
         logger.info(f"Released claim on {stream_id}")
         return True
+
+    async def renew_claims(self, ttl: int = None) -> dict:
+        """
+        Renew all of our current claims.
+
+        This extends the expiration time of claims to prevent them from expiring.
+        Should be called periodically (e.g., every 12 hours for 24-hour TTL claims).
+
+        Args:
+            ttl: New TTL in seconds (default: DEFAULT_CLAIM_TTL)
+
+        Returns:
+            Dict with counts of renewed and failed claims
+        """
+        ttl = ttl or self.DEFAULT_CLAIM_TTL
+        renewed = 0
+        failed = 0
+
+        for stream_id, old_claim in list(self._my_claims.items()):
+            try:
+                # Create renewed claim with same slot but new timestamp/expiry
+                new_claim = StreamClaim(
+                    stream_id=old_claim.stream_id,
+                    slot_index=old_claim.slot_index,
+                    predictor=self.evrmore_address,
+                    peer_id=self.peer_id,
+                    timestamp=int(time.time()),
+                    expires=int(time.time()) + ttl if ttl > 0 else 0,
+                    stake=old_claim.stake,
+                )
+
+                # Update local state
+                self._my_claims[stream_id] = new_claim
+                if stream_id in self._claims:
+                    self._claims[stream_id][new_claim.slot_index] = new_claim
+
+                # Broadcast renewed claim
+                await self._broadcast_claim(new_claim)
+                renewed += 1
+                logger.debug(f"Renewed claim on {stream_id}")
+
+            except Exception as e:
+                logger.warning(f"Failed to renew claim on {stream_id}: {e}")
+                failed += 1
+
+        if renewed > 0:
+            logger.info(f"Renewed {renewed} claims, {failed} failed")
+
+        return {"renewed": renewed, "failed": failed}
 
     async def _broadcast_claim(self, claim: StreamClaim) -> bool:
         """Broadcast stream claim via GossipSub."""
@@ -594,10 +682,25 @@ class StreamRegistry:
         """Get list of streams we've claimed."""
         return list(self._my_claims.values())
 
-    async def get_stream_claims(self, stream_id: str) -> List[StreamClaim]:
-        """Get all claims for a stream."""
+    async def get_stream_claims(self, stream_id: str, include_grace_period: bool = True) -> List[StreamClaim]:
+        """
+        Get all active claims for a stream.
+
+        Args:
+            stream_id: Stream to get claims for
+            include_grace_period: If True, include claims in grace period
+                                 (expired but still holding their slot)
+
+        Returns:
+            List of active claims
+        """
         claims = self._claims.get(stream_id, {})
-        return [c for c in claims.values() if not c.is_expired()]
+        if include_grace_period:
+            # Include claims that are in grace period (expired but not past grace)
+            return [c for c in claims.values() if not c.is_expired(self.CLAIM_GRACE_PERIOD)]
+        else:
+            # Only strictly non-expired claims
+            return [c for c in claims.values() if not c.is_expired()]
 
     async def get_predictors_for_stream(self, stream_id: str) -> List[str]:
         """Get list of predictor addresses for a stream."""
@@ -607,6 +710,28 @@ class StreamRegistry:
     def get_cached_streams(self) -> List[StreamDefinition]:
         """Get all cached stream definitions."""
         return list(self._streams.values())
+
+    def get_active_streams(self, max_age_seconds: int = 900) -> List[StreamDefinition]:
+        """
+        Get streams with recent oracle activity.
+
+        Args:
+            max_age_seconds: Maximum age of last observation (default 15 minutes)
+
+        Returns:
+            List of streams with recent activity
+        """
+        return [s for s in self._streams.values() if s.is_active(max_age_seconds)]
+
+    def update_stream_activity(self, stream_id: str) -> None:
+        """
+        Update the last observation time for a stream.
+
+        Call this when an observation is received for a stream.
+        """
+        if stream_id in self._streams:
+            self._streams[stream_id].last_observation_time = int(time.time())
+            logger.debug(f"Updated activity for stream {stream_id}")
 
     # ========== Callbacks ==========
 

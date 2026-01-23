@@ -34,6 +34,13 @@ import trio
 from typing import Dict, List, Optional, Callable, TYPE_CHECKING, Any, Union
 from dataclasses import dataclass, field, asdict
 
+try:
+    import httpx
+    HTTPX_AVAILABLE = True
+except ImportError:
+    HTTPX_AVAILABLE = False
+    httpx = None
+
 if TYPE_CHECKING:
     from ..peers import Peers
 
@@ -301,6 +308,10 @@ class OracleNetwork:
         # Reference to stream registry for activity tracking (set by neuron startup)
         self._stream_registry: Optional["StreamRegistry"] = None
 
+        # Data fetching for primary oracles
+        self._fetch_cancel_scopes: Dict[str, trio.CancelScope] = {}  # stream_id -> cancel scope
+        self._http_client: Optional["httpx.AsyncClient"] = None
+
     def set_stream_registry(self, registry: "StreamRegistry") -> None:
         """Set stream registry reference for activity tracking."""
         self._stream_registry = registry
@@ -412,6 +423,10 @@ class OracleNetwork:
 
         # Broadcast registration
         await self._broadcast_oracle_registration(registration)
+
+        # Start data fetching loop for primary oracles
+        if is_primary and data_source and data_source.api_url:
+            await self.start_primary_oracle_fetching(stream_id, data_source)
 
         logger.info(f"Registered as oracle for stream_id={stream_id}")
         return registration
@@ -856,3 +871,245 @@ class OracleNetwork:
             "my_published_observations": len(self._my_published_observations),
             "started": self._started,
         }
+
+    # ========== Primary Oracle Data Fetching ==========
+
+    def _extract_json_value(self, data: Any, json_path: str) -> Any:
+        """
+        Extract a value from JSON data using a dot-notation path.
+
+        Supports:
+        - Dot notation: "data.price" or "result.XBTUSD.c.0"
+        - Array indices: "0.4" (first element, then index 4)
+        - Nested paths: "satori-network.usd"
+
+        Args:
+            data: The JSON data (dict or list)
+            json_path: Dot-separated path to the value
+
+        Returns:
+            The extracted value, or None if not found
+        """
+        if not json_path:
+            return data
+
+        parts = json_path.split('.')
+        current = data
+
+        for part in parts:
+            if current is None:
+                return None
+
+            # Try as array index first
+            try:
+                idx = int(part)
+                if isinstance(current, (list, tuple)) and 0 <= idx < len(current):
+                    current = current[idx]
+                    continue
+            except ValueError:
+                pass
+
+            # Try as dict key
+            if isinstance(current, dict):
+                current = current.get(part)
+            else:
+                return None
+
+        return current
+
+    async def _fetch_data_from_api(
+        self,
+        data_source: OracleDataSource
+    ) -> Optional[Any]:
+        """
+        Fetch data from an API endpoint.
+
+        Args:
+            data_source: Data source configuration
+
+        Returns:
+            The extracted value, or None on error
+        """
+        if not HTTPX_AVAILABLE:
+            logger.error("httpx not available - cannot fetch data from API")
+            return None
+
+        if not data_source.api_url:
+            logger.warning("No API URL configured")
+            return None
+
+        # Initialize HTTP client if needed
+        if self._http_client is None:
+            self._http_client = httpx.AsyncClient(timeout=30.0)
+
+        try:
+            # Prepare request
+            method = data_source.api_method.upper() if data_source.api_method else "GET"
+            headers = data_source.api_headers or {}
+
+            # Make request
+            if method == "GET":
+                response = await self._http_client.get(
+                    data_source.api_url,
+                    headers=headers
+                )
+            elif method == "POST":
+                body = data_source.api_body or ""
+                response = await self._http_client.post(
+                    data_source.api_url,
+                    headers=headers,
+                    content=body
+                )
+            else:
+                logger.warning(f"Unsupported HTTP method: {method}")
+                return None
+
+            response.raise_for_status()
+            json_data = response.json()
+
+            # Extract value using json_path
+            value = self._extract_json_value(json_data, data_source.json_path)
+
+            if value is None:
+                logger.warning(f"Could not extract value from path: {data_source.json_path}")
+                return None
+
+            # Convert to appropriate type
+            value_type = data_source.value_type or "float"
+            if value_type == "float":
+                return float(value)
+            elif value_type == "int":
+                return int(float(value))
+            elif value_type == "string":
+                return str(value)
+            else:
+                return float(value)
+
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"HTTP error fetching data: {e.response.status_code}")
+            return None
+        except httpx.RequestError as e:
+            logger.warning(f"Request error fetching data: {e}")
+            return None
+        except json.JSONDecodeError as e:
+            logger.warning(f"JSON decode error: {e}")
+            return None
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Value conversion error: {e}")
+            return None
+        except Exception as e:
+            logger.warning(f"Unexpected error fetching data: {e}")
+            return None
+
+    async def _primary_oracle_fetch_loop(
+        self,
+        stream_id: str,
+        data_source: OracleDataSource,
+        interval: int = 60
+    ) -> None:
+        """
+        Fetch data periodically and publish observations.
+
+        This runs in the background for each primary oracle registration.
+
+        Args:
+            stream_id: Stream to publish to
+            data_source: Data source configuration
+            interval: Fetch interval in seconds
+        """
+        logger.info(f"Starting primary oracle fetch loop for {stream_id} (interval={interval}s)")
+
+        while True:
+            try:
+                # Fetch data from API
+                value = await self._fetch_data_from_api(data_source)
+
+                if value is not None:
+                    # Publish observation
+                    timestamp = int(time.time())
+                    await self.publish_observation(stream_id, value, timestamp)
+                    logger.info(f"Published observation for {stream_id}: {value}")
+                else:
+                    logger.warning(f"Failed to fetch data for {stream_id}")
+
+                # Wait for next fetch
+                await trio.sleep(interval)
+
+            except trio.Cancelled:
+                logger.info(f"Fetch loop cancelled for {stream_id}")
+                raise
+            except Exception as e:
+                logger.error(f"Error in fetch loop for {stream_id}: {e}")
+                # Wait before retry on error
+                await trio.sleep(min(interval, 30))
+
+    async def start_primary_oracle_fetching(
+        self,
+        stream_id: str,
+        data_source: OracleDataSource
+    ) -> bool:
+        """
+        Start the data fetching loop for a primary oracle.
+
+        Args:
+            stream_id: Stream to fetch for
+            data_source: Data source configuration
+
+        Returns:
+            True if started successfully
+        """
+        if not HTTPX_AVAILABLE:
+            logger.error("httpx not available - cannot start data fetching")
+            return False
+
+        if stream_id in self._fetch_cancel_scopes:
+            logger.warning(f"Fetch loop already running for {stream_id}")
+            return False
+
+        # Determine fetch interval
+        interval = data_source.fetch_interval if data_source.fetch_interval > 0 else 60
+
+        # Start the fetch loop in background
+        async def run_fetch_loop():
+            with trio.CancelScope() as scope:
+                self._fetch_cancel_scopes[stream_id] = scope
+                try:
+                    await self._primary_oracle_fetch_loop(stream_id, data_source, interval)
+                finally:
+                    self._fetch_cancel_scopes.pop(stream_id, None)
+
+        # Schedule the fetch loop to run
+        if hasattr(self.peers, '_nursery') and self.peers._nursery:
+            self.peers._nursery.start_soon(run_fetch_loop)
+            logger.info(f"Started fetch loop for {stream_id}")
+            return True
+        else:
+            logger.warning(f"No nursery available to start fetch loop for {stream_id}")
+            return False
+
+    async def stop_primary_oracle_fetching(self, stream_id: str) -> bool:
+        """
+        Stop the data fetching loop for a primary oracle.
+
+        Args:
+            stream_id: Stream to stop fetching for
+
+        Returns:
+            True if stopped successfully
+        """
+        scope = self._fetch_cancel_scopes.get(stream_id)
+        if scope:
+            scope.cancel()
+            logger.info(f"Stopped fetch loop for {stream_id}")
+            return True
+        return False
+
+    async def stop_all_fetching(self) -> None:
+        """Stop all primary oracle fetch loops."""
+        for stream_id in list(self._fetch_cancel_scopes.keys()):
+            await self.stop_primary_oracle_fetching(stream_id)
+
+        # Close HTTP client
+        if self._http_client:
+            await self._http_client.aclose()
+            self._http_client = None

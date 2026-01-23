@@ -7,6 +7,9 @@ libp2p>=0.4.0
 # Async IO
 trio>=0.22.0
 
+# HTTP client for data fetching (trio-compatible)
+httpx[http2]>=0.25.0
+
 # UPnP for NAT traversal
 miniupnpc>=2.2.0
 

@@ -705,11 +705,24 @@ class OracleNetwork:
         observations = self._observation_cache.get(stream_id, [])
         return observations[-1] if observations else None
 
-    def get_recent_observations(self, limit: int = 20) -> List[Observation]:
-        """Get recent observations across all streams, sorted by timestamp."""
+    def get_recent_observations(self, limit: int = 20, include_own: bool = True) -> List[Observation]:
+        """Get recent observations across all streams, sorted by timestamp.
+
+        Args:
+            limit: Maximum number of observations to return
+            include_own: If True, include our own published observations (default: True)
+
+        Returns:
+            List of recent observations sorted by timestamp (newest first)
+        """
         all_observations = []
         for stream_observations in self._observation_cache.values():
             all_observations.extend(stream_observations)
+
+        # Include our own published observations if requested
+        if include_own and self._my_published_observations:
+            all_observations.extend(self._my_published_observations)
+
         # Sort by timestamp descending and limit
         all_observations.sort(key=lambda o: o.timestamp, reverse=True)
         return all_observations[:limit]

@@ -426,6 +426,10 @@ class UptimeTracker:
         self._heartbeats_sent: int = 0
         self._heartbeats_received: int = 0
 
+        # Role callback for dynamic role determination
+        # This allows the application to provide roles dynamically based on current state
+        self._role_callback: Optional[Callable[[], List[str]]] = None
+
         # Activity stats storage for persistence (survives restart)
         self._activity_storage: Optional[ActivityStatsStorage] = None
         if ACTIVITY_STORAGE_AVAILABLE:
@@ -614,6 +618,20 @@ class UptimeTracker:
     def on_heartbeat_sent(self, callback: Optional[Callable[[Heartbeat], None]]) -> None:
         """Set callback for sent heartbeats."""
         self._on_heartbeat_sent = callback
+
+    @property
+    def role_callback(self) -> Optional[Callable[[], List[str]]]:
+        """Callback to get current node roles dynamically."""
+        return self._role_callback
+
+    @role_callback.setter
+    def role_callback(self, callback: Optional[Callable[[], List[str]]]) -> None:
+        """Set callback for dynamic role determination.
+
+        The callback should return a list of current roles (e.g., ['oracle', 'relay']).
+        If not set, defaults to ['predictor'].
+        """
+        self._role_callback = callback
 
     # ========================================================================
     # PUBLIC API
@@ -810,6 +828,17 @@ class UptimeTracker:
         if not current_peer_id and self.peers:
             current_peer_id = getattr(self.peers, 'peer_id', '') or ''
 
+        # Determine roles: use provided roles, then callback, then default to node
+        heartbeat_roles = roles
+        if heartbeat_roles is None and self._role_callback is not None:
+            try:
+                heartbeat_roles = self._role_callback()
+            except Exception as e:
+                logger.debug(f"Role callback failed: {e}")
+                heartbeat_roles = None
+        if not heartbeat_roles:
+            heartbeat_roles = ["node"]
+
         # Create heartbeat with all fields
         heartbeat = Heartbeat(
             node_id=self.node_id,
@@ -817,7 +846,7 @@ class UptimeTracker:
             round_id=self._current_round,
             evrmore_address=self.evrmore_address,
             peer_id=current_peer_id,
-            roles=roles or ["predictor"],
+            roles=heartbeat_roles,
             stake=self.stake,
             version=HEARTBEAT_PROTOCOL_VERSION,
             status_message=Heartbeat.get_random_status(),

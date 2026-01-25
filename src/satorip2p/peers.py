@@ -1176,6 +1176,48 @@ class Peers:
                     count += 1
             return count
 
+    async def publish_to_topic(
+        self,
+        topic: str,
+        message: Any
+    ) -> bool:
+        """
+        Publish message to an exact GossipSub topic without prefix modification.
+
+        Use this when you need precise control over the topic string, such as
+        for oracle observations which use 'satori/data/' prefix instead of
+        the standard 'satori/stream/' prefix.
+
+        Args:
+            topic: Exact topic string to publish to (no prefix added)
+            message: Message payload (will be serialized)
+
+        Returns:
+            True if published successfully, False otherwise
+
+        Usage:
+            # Publish to exact topic (no prefix added)
+            await peers.publish_to_topic("satori/data/stream_id", {"value": 123})
+        """
+        if not self._started or not self._pubsub:
+            logger.warning(f"Cannot publish to {topic}: pubsub not available")
+            return False
+
+        try:
+            data = serialize_message(message)
+            logger.debug(f"Publishing to topic {topic}")
+            await self._pubsub.publish(topic, data)
+            logger.debug(f"Published to {topic} successful")
+
+            # Track bandwidth for outgoing message
+            if self._bandwidth_tracker:
+                await self._bandwidth_tracker.account_publish(topic, len(data))
+
+            return True
+        except Exception as e:
+            logger.error(f"Publish to {topic} failed: {e}")
+            return False
+
     async def request(
         self,
         peer_id: str,

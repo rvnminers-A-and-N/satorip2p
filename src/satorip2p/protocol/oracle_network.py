@@ -598,7 +598,12 @@ class OracleNetwork:
             if stream_id in self._subscribed_streams:
                 for callback in self._subscribed_streams[stream_id]:
                     try:
-                        callback(observation)
+                        # Handle both sync and async callbacks
+                        import asyncio
+                        if asyncio.iscoroutinefunction(callback):
+                            await callback(observation)
+                        else:
+                            callback(observation)
                     except Exception as e:
                         logger.debug(f"Observation callback error: {e}")
 
@@ -699,11 +704,15 @@ class OracleNetwork:
             logger.warning(f"Failed to sign observation: {e}")
             observation.signature = "unsigned"
 
-        # Broadcast observation
+        # Publish observation to the oracle data topic (satori/data/{stream_id})
+        # Use publish_to_topic for exact topic control (no prefix modification)
         topic = f"{self.STREAM_TOPIC_PREFIX}{stream_id}"
         try:
-            await self.peers.broadcast(topic, observation.to_dict())
-            logger.debug(f"Published observation for stream_id={stream_id} value={value}")
+            success = await self.peers.publish_to_topic(topic, observation.to_dict())
+            if success:
+                logger.info(f"Published observation for {stream_id}: {value}")
+            else:
+                logger.warning(f"Failed to publish observation for {stream_id}")
 
             # Store in our published observations cache
             self._my_published_observations.append(observation)
@@ -855,11 +864,13 @@ class OracleNetwork:
                 return False
 
         # Re-broadcast the original observation (keeping original oracle's signature)
+        # Use publish_to_topic for exact topic control (no prefix modification)
         topic = f"{self.STREAM_TOPIC_PREFIX}{stream_id}"
         try:
-            await self.peers.broadcast(topic, observation.to_dict())
-            logger.debug(f"Relayed observation for stream_id={stream_id} from oracle={observation.oracle}")
-            return True
+            success = await self.peers.publish_to_topic(topic, observation.to_dict())
+            if success:
+                logger.debug(f"Relayed observation for stream_id={stream_id} from oracle={observation.oracle}")
+            return success
         except Exception as e:
             logger.warning(f"Failed to relay observation: {e}")
             return False

@@ -302,8 +302,9 @@ class OracleNetwork:
         self._my_published_observations: List[Observation] = []  # Our published observations
         self._started = False
 
-        # External callback for bridge integration (set by p2p_bridge)
+        # External callbacks for bridge integration (set by p2p_bridge)
         self.on_observation_received: Optional[Callable[[Observation], None]] = None
+        self.on_observation_published: Optional[Callable[[Observation], None]] = None
 
         # Reference to stream registry for activity tracking (set by neuron startup)
         self._stream_registry: Optional["StreamRegistry"] = None
@@ -683,6 +684,13 @@ class OracleNetwork:
             # Keep only recent observations (max 100)
             if len(self._my_published_observations) > 100:
                 self._my_published_observations = self._my_published_observations[-100:]
+
+            # Notify bridge of our published observation (for Live Events)
+            if self.on_observation_published:
+                try:
+                    self.on_observation_published(observation)
+                except Exception as e:
+                    logger.debug(f"on_observation_published callback failed: {e}")
 
             return observation
         except Exception as e:

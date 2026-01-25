@@ -1295,9 +1295,8 @@ class Peers:
         if self._pubsub:
             topic = f"{STREAM_TOPIC_PREFIX}{stream_id}"
             await self._subscribe_to_topic(topic, stream_id)
-            # Start message processor for this subscription
-            if self._nursery:
-                self._nursery.start_soon(self.process_messages, stream_id)
+            # Start message processor for this subscription (queue if nursery not ready)
+            self.spawn_background_task(self.process_messages, stream_id)
 
         # Announce subscription to DHT
         if self._subscriptions and self.peer_id:
@@ -2950,9 +2949,9 @@ class Peers:
                 recovered += 1
                 logger.info(f"Successfully recovered subscription to {topic}")
 
-                # Start message processor for this subscription if we have a nursery
-                if self._nursery and stream_id in self._my_subscriptions:
-                    self._nursery.start_soon(self.process_messages, stream_id)
+                # Start message processor for this subscription (queue if nursery not ready)
+                if stream_id in self._my_subscriptions:
+                    self.spawn_background_task(self.process_messages, stream_id)
             else:
                 logger.warning(f"Failed to recover subscription to {topic}")
 

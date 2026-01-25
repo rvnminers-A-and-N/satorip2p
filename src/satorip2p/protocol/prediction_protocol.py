@@ -56,6 +56,7 @@ class Prediction:
     hash: str = ""              # Hash of the prediction
     signature: str = ""         # Signed by predictor's wallet
     confidence: float = 0.0     # Predictor's confidence (0-1)
+    is_oracle: bool = False     # True if predictor is also oracle for this stream
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -77,6 +78,7 @@ class Prediction:
         """Create from dictionary."""
         data.setdefault("metadata", {})
         data.setdefault("confidence", 0.0)
+        data.setdefault("is_oracle", False)
         return cls(**data)
 
     def get_signing_message(self) -> str:
@@ -345,7 +347,8 @@ class PredictionProtocol:
         value: Union[float, str],
         target_time: int,
         confidence: float = 0.0,
-        metadata: dict = None
+        metadata: dict = None,
+        is_oracle: bool = False
     ) -> Optional[Prediction]:
         """
         Publish a prediction for a future observation.
@@ -356,6 +359,7 @@ class PredictionProtocol:
             target_time: When this prediction is for
             confidence: Confidence level (0-1)
             metadata: Additional metadata
+            is_oracle: True if predictor is also an oracle for this stream
 
         Returns:
             Prediction if published successfully
@@ -371,6 +375,7 @@ class PredictionProtocol:
             predictor=self.evrmore_address,
             created_at=int(time.time()),
             confidence=confidence,
+            is_oracle=is_oracle,
             metadata=metadata or {},
         )
 

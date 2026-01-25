@@ -429,7 +429,22 @@ class OracleNetwork:
         if is_primary and data_source and data_source.api_url:
             await self.start_primary_oracle_fetching(stream_id, data_source)
 
-        logger.info(f"Registered as oracle for stream_id={stream_id}")
+        # Secondary oracles: subscribe to stream and relay observations
+        if not is_primary:
+            async def relay_callback(observation: Observation):
+                """Relay observations from primary oracle."""
+                await self.relay_observation(observation, verify=False)
+                # Also cache it locally
+                if stream_id not in self._observation_cache:
+                    self._observation_cache[stream_id] = []
+                self._observation_cache[stream_id].append(observation)
+                if len(self._observation_cache[stream_id]) > 100:
+                    self._observation_cache[stream_id] = self._observation_cache[stream_id][-100:]
+
+            await self.subscribe_to_stream(stream_id, relay_callback)
+            logger.info(f"Secondary oracle subscribed to {stream_id} for relay")
+
+        logger.info(f"Registered as {'primary' if is_primary else 'secondary'} oracle for stream_id={stream_id}")
         return registration
 
     async def _broadcast_oracle_registration(self, registration: OracleRegistration) -> bool:
@@ -497,12 +512,23 @@ class OracleNetwork:
         if stream_id not in self._subscribed_streams:
             self._subscribed_streams[stream_id] = []
 
-            # Subscribe to GossipSub topic with full network registration
+            # Subscribe to GossipSub topic directly (not via subscribe_async which adds wrong prefix)
             if self.peers._pubsub:
-                await self.peers.subscribe_async(
-                    topic,
+                # Register local callback first
+                if stream_id not in self.peers._callbacks:
+                    self.peers._callbacks[stream_id] = []
+                self.peers._callbacks[stream_id].append(
                     lambda sid, data, s=stream_id: self._on_observation_received(s, data)
                 )
+                self.peers._my_subscriptions.add(stream_id)
+
+                # Subscribe to the actual topic using oracle network's prefix
+                await self.peers._subscribe_to_topic(topic, stream_id)
+                logger.info(f"Oracle network subscribed to topic: {topic}")
+
+                # Start message processor if nursery available
+                if self.peers._nursery:
+                    self.peers._nursery.start_soon(self.peers.process_messages, stream_id)
 
         self._subscribed_streams[stream_id].append(callback)
         logger.debug(f"Subscribed to stream_id={stream_id}")

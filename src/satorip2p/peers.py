@@ -2734,6 +2734,10 @@ class Peers:
         If the nursery is not yet available (before run_forever() is called),
         the task is queued and will be started when run_forever() creates the nursery.
 
+        Note: This method always queues tasks rather than spawning immediately to avoid
+        issues when called from trio.from_thread.run() contexts (which don't share the
+        main nursery scope).
+
         Args:
             coro_func: Async function to run
             *args: Arguments to pass to the function
@@ -2741,15 +2745,11 @@ class Peers:
         Returns:
             True if task was spawned or queued successfully
         """
-        if self._nursery:
-            self._nursery.start_soon(coro_func, *args)
-            logger.debug(f"Background task spawned immediately: {coro_func.__name__}")
-            return True
-        else:
-            # Queue for later - will be spawned when run_forever() creates nursery
-            self._pending_background_tasks.append((coro_func, args))
-            logger.info(f"Background task queued (will start when nursery available): {coro_func.__name__}")
-            return True
+        # Always queue the task - the main nursery will pick it up
+        # This avoids issues when called from trio.from_thread.run() contexts
+        self._pending_background_tasks.append((coro_func, args))
+        logger.info(f"Background task queued: {coro_func.__name__}")
+        return True
 
     async def _retrieve_pending_messages(self) -> None:
         """Retrieve messages stored for us while offline."""

@@ -447,6 +447,59 @@ class OracleNetwork:
         logger.info(f"Registered as {'primary' if is_primary else 'secondary'} oracle for stream_id={stream_id}")
         return registration
 
+    async def unregister_as_oracle(self, stream_id: str) -> bool:
+        """
+        Unregister as an oracle for a stream.
+
+        Args:
+            stream_id: Stream to unregister from
+
+        Returns:
+            True if unregistered successfully
+        """
+        if stream_id not in self._my_registrations:
+            logger.warning(f"Not registered as oracle for {stream_id}")
+            return False
+
+        registration = self._my_registrations[stream_id]
+        is_primary = registration.is_primary
+
+        # Stop primary oracle fetching if applicable
+        if is_primary:
+            await self.stop_primary_oracle_fetching(stream_id)
+
+        # Unsubscribe from the stream (for secondary oracles)
+        if stream_id in self._subscribed_streams:
+            await self.unsubscribe_from_stream(stream_id)
+
+        # Remove from our registrations
+        del self._my_registrations[stream_id]
+
+        # Broadcast deregistration to network
+        await self._broadcast_oracle_deregistration(stream_id, registration.oracle)
+
+        logger.info(f"Unregistered as {'primary' if is_primary else 'secondary'} oracle for stream_id={stream_id}")
+        return True
+
+    async def _broadcast_oracle_deregistration(self, stream_id: str, oracle_address: str) -> bool:
+        """Broadcast oracle deregistration via GossipSub."""
+        try:
+            await self.peers.broadcast(
+                self.ORACLE_REGISTRY_TOPIC,
+                {
+                    "type": "deregister",
+                    "data": {
+                        "stream_id": stream_id,
+                        "oracle": oracle_address,
+                        "timestamp": int(time.time())
+                    }
+                }
+            )
+            return True
+        except Exception as e:
+            logger.debug(f"Oracle deregistration broadcast failed: {e}")
+            return False
+
     async def _broadcast_oracle_registration(self, registration: OracleRegistration) -> bool:
         """Broadcast oracle registration via GossipSub."""
         try:
@@ -460,12 +513,41 @@ class OracleNetwork:
             return False
 
     async def _on_oracle_registration(self, stream_id: str, data: dict) -> None:
-        """Handle received oracle registration."""
+        """Handle received oracle registration or deregistration."""
         try:
-            logger.info(f"_on_oracle_registration called: stream_id={stream_id}, data_type={data.get('type')}")
+            msg_type = data.get("type")
+            logger.info(f"_on_oracle_registration called: stream_id={stream_id}, data_type={msg_type}")
 
-            if data.get("type") != "register":
-                logger.debug(f"Ignoring non-register message: type={data.get('type')}")
+            if msg_type == "deregister":
+                # Handle deregistration
+                dereg_data = data.get("data", {})
+                dereg_stream_id = dereg_data.get("stream_id")
+                oracle_address = dereg_data.get("oracle")
+
+                if not dereg_stream_id or not oracle_address:
+                    logger.debug("Ignoring incomplete deregistration message")
+                    return
+
+                # Don't process our own deregistrations
+                if oracle_address == self.evrmore_address:
+                    logger.debug(f"Ignoring own deregistration for stream_id={dereg_stream_id}")
+                    return
+
+                # Remove from registry
+                if dereg_stream_id in self._oracle_registrations:
+                    if oracle_address in self._oracle_registrations[dereg_stream_id]:
+                        del self._oracle_registrations[dereg_stream_id][oracle_address]
+                        logger.info(
+                            f"Removed oracle registration: stream_id={dereg_stream_id} "
+                            f"oracle={oracle_address} (total known: {sum(len(v) for v in self._oracle_registrations.values())})"
+                        )
+                        # Clean up empty stream entries
+                        if not self._oracle_registrations[dereg_stream_id]:
+                            del self._oracle_registrations[dereg_stream_id]
+                return
+
+            if msg_type != "register":
+                logger.debug(f"Ignoring unknown message type: {msg_type}")
                 return
 
             registration = OracleRegistration.from_dict(data.get("data", {}))
@@ -514,21 +596,18 @@ class OracleNetwork:
 
             # Subscribe to GossipSub topic directly (not via subscribe_async which adds wrong prefix)
             if self.peers._pubsub:
-                # Register local callback first
-                if stream_id not in self.peers._callbacks:
-                    self.peers._callbacks[stream_id] = []
-                self.peers._callbacks[stream_id].append(
-                    lambda sid, data, s=stream_id: self._on_observation_received(s, data)
-                )
-                self.peers._my_subscriptions.add(stream_id)
-
                 # Subscribe to the actual topic using oracle network's prefix
                 await self.peers._subscribe_to_topic(topic, stream_id)
                 logger.info(f"Oracle network subscribed to topic: {topic}")
 
-                # Start message processor if nursery available
-                if self.peers._nursery:
-                    self.peers._nursery.start_soon(self.peers.process_messages, stream_id)
+                # Start our own message processor for this oracle topic
+                # (can't use peers.process_messages because it uses wrong topic prefix)
+                # Note: We must queue this for the main nursery since we may be called
+                # from trio.from_thread.run which doesn't share the nursery scope
+                self.peers.spawn_background_task(
+                    self._process_oracle_messages, stream_id, topic
+                )
+                logger.info(f"Oracle message processor queued for {stream_id}")
 
         self._subscribed_streams[stream_id].append(callback)
         logger.debug(f"Subscribed to stream_id={stream_id}")
@@ -559,6 +638,46 @@ class OracleNetwork:
         del self._subscribed_streams[stream_id]
         logger.debug(f"Unsubscribed from stream_id={stream_id}")
         return True
+
+    async def _process_oracle_messages(self, stream_id: str, topic: str) -> None:
+        """
+        Process incoming messages for an oracle observation subscription.
+
+        This is a custom message processor for oracle topics (satori/data/*)
+        since peers.process_messages uses the wrong topic prefix (satori/stream/*).
+
+        Args:
+            stream_id: The stream ID to process messages for
+            topic: The actual GossipSub topic (satori/data/{stream_id})
+        """
+        from ..messages import deserialize_message
+
+        if not hasattr(self.peers, '_topic_subscriptions'):
+            logger.warning(f"No topic subscriptions available for {stream_id}")
+            return
+
+        subscription = self.peers._topic_subscriptions.get(topic)
+        if not subscription:
+            logger.warning(f"No subscription found for oracle topic {topic}")
+            return
+
+        logger.info(f"Starting oracle message processing for {stream_id} on topic {topic}")
+
+        while stream_id in self._subscribed_streams:
+            try:
+                msg = await subscription.get()
+                byte_size = len(msg.data)
+                logger.info(f"Oracle received message on {topic}: {byte_size} bytes")
+
+                data = deserialize_message(msg.data)
+                # Dispatch directly to our observation handler
+                await self._on_observation_received(stream_id, data)
+
+            except Exception as e:
+                logger.debug(f"Oracle message loop error for {topic}: {e}")
+                break
+
+        logger.info(f"Oracle message processing ended for {stream_id}")
 
     async def _on_observation_received(self, stream_id: str, data: dict) -> None:
         """Handle received observation."""

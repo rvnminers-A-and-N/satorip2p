@@ -540,10 +540,18 @@ class Peers:
             for stream_id in list(self._my_subscriptions):
                 nursery.start_soon(self.process_messages, stream_id)
 
-            # Run until cancelled
+            # Run until cancelled, processing any queued background tasks
             try:
                 while True:
-                    await trio.sleep(1)
+                    # Check for and spawn any newly queued background tasks
+                    if self._pending_background_tasks:
+                        tasks_to_spawn = self._pending_background_tasks.copy()
+                        self._pending_background_tasks.clear()
+                        logger.info(f"Spawning {len(tasks_to_spawn)} queued background task(s)")
+                        for coro_func, args in tasks_to_spawn:
+                            nursery.start_soon(coro_func, *args)
+                            logger.debug(f"Queued task spawned: {coro_func.__name__}")
+                    await trio.sleep(0.5)  # Check more frequently for responsiveness
             except trio.Cancelled:
                 logger.info("run_forever cancelled, stopping services...")
                 # Stop services gracefully before nursery exits

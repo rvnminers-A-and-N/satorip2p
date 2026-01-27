@@ -152,8 +152,9 @@ class PredictionProtocol:
         self._score_callbacks: List[Callable] = []
         self._started = False
 
-        # External callback for bridge integration (set by p2p_bridge)
+        # External callbacks for bridge integration (set by p2p_bridge)
         self.on_prediction_received: Optional[Callable[[Prediction], None]] = None
+        self.on_prediction_published: Optional[Callable[[Prediction], None]] = None
 
     @property
     def evrmore_address(self) -> str:
@@ -399,6 +400,14 @@ class PredictionProtocol:
         try:
             await self.peers.broadcast(topic, prediction.to_dict())
             logger.debug(f"Published prediction for {stream_id} value={value}")
+
+            # Notify bridge of our published prediction (for Live Events)
+            if self.on_prediction_published:
+                try:
+                    self.on_prediction_published(prediction)
+                except Exception as e:
+                    logger.debug(f"on_prediction_published callback failed: {e}")
+
             return prediction
         except Exception as e:
             logger.warning(f"Failed to publish prediction: {e}")

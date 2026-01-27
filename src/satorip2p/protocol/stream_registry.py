@@ -452,6 +452,12 @@ class StreamRegistry:
             logger.warning("Cannot claim stream: missing identity")
             return None
 
+        # Check if we already have a claim on this stream
+        existing_claim = self._my_claims.get(stream_id)
+        if existing_claim and not existing_claim.is_expired(self.CLAIM_GRACE_PERIOD):
+            logger.warning(f"Already have active claim on {stream_id} slot {existing_claim.slot_index}")
+            return existing_claim  # Return existing claim instead of creating duplicate
+
         # Check if stream exists
         stream = await self.get_stream(stream_id)
         if not stream:

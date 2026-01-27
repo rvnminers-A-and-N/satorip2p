@@ -651,7 +651,7 @@ class OracleNetwork:
             topic: The actual GossipSub topic (satori/data/{stream_id})
         """
         try:
-            from ..messages import deserialize_message
+            from .messages import deserialize_message
 
             # Wait a moment for subscription to be fully ready
             import trio

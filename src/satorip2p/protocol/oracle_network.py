@@ -650,34 +650,45 @@ class OracleNetwork:
             stream_id: The stream ID to process messages for
             topic: The actual GossipSub topic (satori/data/{stream_id})
         """
-        from ..messages import deserialize_message
+        try:
+            from ..messages import deserialize_message
 
-        if not hasattr(self.peers, '_topic_subscriptions'):
-            logger.warning(f"No topic subscriptions available for {stream_id}")
-            return
+            # Wait a moment for subscription to be fully ready
+            import trio
+            await trio.sleep(0.5)
 
-        subscription = self.peers._topic_subscriptions.get(topic)
-        if not subscription:
-            logger.warning(f"No subscription found for oracle topic {topic}")
-            return
+            if not hasattr(self.peers, '_topic_subscriptions'):
+                logger.warning(f"No topic subscriptions available for {stream_id}")
+                return
 
-        logger.info(f"Starting oracle message processing for {stream_id} on topic {topic}")
+            subscription = self.peers._topic_subscriptions.get(topic)
+            if not subscription:
+                logger.warning(f"No subscription found for oracle topic {topic}")
+                return
 
-        while stream_id in self._subscribed_streams:
-            try:
-                msg = await subscription.get()
-                byte_size = len(msg.data)
-                logger.info(f"Oracle received message on {topic}: {byte_size} bytes")
+            logger.info(f"Starting oracle message processing for {stream_id} on topic {topic}")
 
-                data = deserialize_message(msg.data)
-                # Dispatch directly to our observation handler
-                await self._on_observation_received(stream_id, data)
+            while stream_id in self._subscribed_streams:
+                try:
+                    msg = await subscription.get()
+                    byte_size = len(msg.data)
+                    logger.info(f"Oracle received message on {topic}: {byte_size} bytes")
 
-            except Exception as e:
-                logger.debug(f"Oracle message loop error for {topic}: {e}")
-                break
+                    data = deserialize_message(msg.data)
+                    # Dispatch directly to our observation handler
+                    await self._on_observation_received(stream_id, data)
 
-        logger.info(f"Oracle message processing ended for {stream_id}")
+                except trio.Cancelled:
+                    logger.info(f"Oracle message processing cancelled for {stream_id}")
+                    break
+                except Exception as e:
+                    logger.warning(f"Oracle message loop error for {topic}: {e}")
+                    # Don't break on errors - continue processing
+                    await trio.sleep(0.1)
+
+            logger.info(f"Oracle message processing ended for {stream_id}")
+        except Exception as e:
+            logger.warning(f"Oracle message processor failed for {stream_id}: {e}")
 
     async def _on_observation_received(self, stream_id: str, data: dict) -> None:
         """Handle received observation."""

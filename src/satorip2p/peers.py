@@ -549,8 +549,11 @@ class Peers:
                         self._pending_background_tasks.clear()
                         logger.info(f"Spawning {len(tasks_to_spawn)} queued background task(s)")
                         for coro_func, args in tasks_to_spawn:
-                            nursery.start_soon(coro_func, *args)
-                            logger.debug(f"Queued task spawned: {coro_func.__name__}")
+                            try:
+                                nursery.start_soon(coro_func, *args)
+                                logger.debug(f"Queued task spawned: {coro_func.__name__}")
+                            except Exception as e:
+                                logger.warning(f"Failed to spawn task {coro_func.__name__}: {e}")
                     await trio.sleep(0.5)  # Check more frequently for responsiveness
             except trio.Cancelled:
                 logger.info("run_forever cancelled, stopping services...")

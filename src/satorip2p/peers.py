@@ -36,6 +36,8 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Unio
 import trio
 import logging
 import uuid
+import hashlib
+import time
 
 from .config import (
     PeerInfo,
@@ -202,6 +204,15 @@ class Peers:
 
         # Bandwidth tracking (optional, set via set_bandwidth_tracker)
         self._bandwidth_tracker = None
+
+        # Message deduplication to prevent processing the same message multiple times
+        # GossipSub can deliver the same message from multiple mesh peers
+        self._seen_messages: Dict[str, float] = {}  # message_hash -> timestamp
+        self._seen_messages_max_size = 10000  # Max messages to track
+        self._seen_messages_ttl = 300  # 5 minutes TTL
+
+        # Track running message processors to prevent duplicates
+        self._active_processors: Set[str] = set()
 
         # Protocol references for role detection
         self._oracle_network = None  # Set via set_oracle_network()
@@ -3066,6 +3077,40 @@ class Peers:
             "topic_subscriptions": len(getattr(self, '_topic_subscriptions', {})),
         }
 
+    def _is_duplicate_message(self, msg_data: bytes, stream_id: str) -> bool:
+        """
+        Check if a message is a duplicate based on content hash.
+
+        GossipSub may deliver the same message from multiple mesh peers.
+        We deduplicate by hashing the message content + stream_id.
+
+        Returns:
+            True if message was already seen, False otherwise
+        """
+        # Create hash of message content
+        msg_hash = hashlib.sha256(msg_data + stream_id.encode()).hexdigest()[:32]
+        now = time.time()
+
+        # Check if we've seen this message
+        if msg_hash in self._seen_messages:
+            return True
+
+        # Add to seen messages
+        self._seen_messages[msg_hash] = now
+
+        # Periodic cleanup: remove expired entries and trim size
+        if len(self._seen_messages) > self._seen_messages_max_size:
+            # Remove oldest half when we hit max size
+            sorted_items = sorted(self._seen_messages.items(), key=lambda x: x[1])
+            self._seen_messages = dict(sorted_items[len(sorted_items) // 2:])
+
+        # Also remove expired entries (older than TTL)
+        expired = [h for h, t in self._seen_messages.items() if now - t > self._seen_messages_ttl]
+        for h in expired:
+            del self._seen_messages[h]
+
+        return False
+
     async def process_messages(self, stream_id: str) -> None:
         """
         Process incoming messages for a stream subscription.
@@ -3083,45 +3128,61 @@ class Peers:
         """
         topic = f"{STREAM_TOPIC_PREFIX}{stream_id}"
 
-        if not hasattr(self, '_topic_subscriptions'):
+        # Prevent duplicate processors for the same stream
+        if stream_id in self._active_processors:
+            logger.debug(f"Processor already running for {stream_id}, skipping")
             return
+        self._active_processors.add(stream_id)
 
-        subscription = self._topic_subscriptions.get(topic)
-        if not subscription:
-            logger.warning(f"No subscription found for stream {stream_id}")
-            return
+        try:
+            if not hasattr(self, '_topic_subscriptions'):
+                return
 
-        logger.info(f"Starting message processing for {stream_id}")
+            subscription = self._topic_subscriptions.get(topic)
+            if not subscription:
+                logger.warning(f"No subscription found for stream {stream_id}")
+                return
 
-        while stream_id in self._my_subscriptions:
-            try:
-                msg = await subscription.get()
-                byte_size = len(msg.data)
-                logger.info(f"Received message on {stream_id}: {byte_size} bytes")
+            logger.info(f"Starting message processing for {stream_id}")
 
-                # Track bandwidth for incoming message
-                if self._bandwidth_tracker:
-                    # msg.from_id contains the original author peer ID
-                    peer_id = str(msg.from_id) if hasattr(msg, 'from_id') and msg.from_id else None
-                    await self._bandwidth_tracker.account_receive(stream_id, byte_size, peer_id)
+            while stream_id in self._my_subscriptions:
+                try:
+                    msg = await subscription.get()
+                    byte_size = len(msg.data)
 
-                data = deserialize_message(msg.data)
-                if stream_id in self._callbacks:
-                    callbacks = self._callbacks[stream_id]
-                    logger.info(f"Dispatching to {len(callbacks)} callback(s) for {stream_id}")
-                    for callback in callbacks:
-                        try:
-                            result = callback(stream_id, data)
-                            # Handle async callbacks
-                            if hasattr(result, '__await__') or hasattr(result, 'send'):
-                                await result
-                        except Exception as e:
-                            logger.error(f"Callback error for {stream_id}: {e}", exc_info=True)
-                else:
-                    logger.warning(f"No callbacks registered for stream {stream_id}")
-            except Exception as e:
-                logger.debug(f"Message loop error for {topic}: {e}")
-                break
+                    # Check for duplicate message BEFORE processing
+                    if self._is_duplicate_message(msg.data, stream_id):
+                        logger.debug(f"Duplicate message on {stream_id}, skipping")
+                        continue
+
+                    logger.info(f"Received message on {stream_id}: {byte_size} bytes")
+
+                    # Track bandwidth for incoming message
+                    if self._bandwidth_tracker:
+                        # msg.from_id contains the original author peer ID
+                        peer_id = str(msg.from_id) if hasattr(msg, 'from_id') and msg.from_id else None
+                        await self._bandwidth_tracker.account_receive(stream_id, byte_size, peer_id)
+
+                    data = deserialize_message(msg.data)
+                    if stream_id in self._callbacks:
+                        callbacks = self._callbacks[stream_id]
+                        logger.info(f"Dispatching to {len(callbacks)} callback(s) for {stream_id}")
+                        for callback in callbacks:
+                            try:
+                                result = callback(stream_id, data)
+                                # Handle async callbacks
+                                if hasattr(result, '__await__') or hasattr(result, 'send'):
+                                    await result
+                            except Exception as e:
+                                logger.error(f"Callback error for {stream_id}: {e}", exc_info=True)
+                    else:
+                        logger.warning(f"No callbacks registered for stream {stream_id}")
+                except Exception as e:
+                    logger.debug(f"Message loop error for {topic}: {e}")
+                    break
+        finally:
+            # Remove from active processors when done
+            self._active_processors.discard(stream_id)
 
     def __repr__(self) -> str:
         status = "running" if self._started else "stopped"

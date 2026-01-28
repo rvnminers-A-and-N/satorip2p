@@ -925,7 +925,11 @@ class Peers:
                     # all pubsub peers to the mesh - they can PRUNE if not interested
                     connected_set = set(connected_peer_ids)
                     pubsub_peer_set = set(self._pubsub.peers.keys()) if hasattr(self._pubsub, 'peers') else set()
-                    for topic in list(router.mesh.keys()):
+                    # Include BOTH existing mesh topics AND our subscriptions
+                    # This ensures topics subscribed to (like satori/data/*) get mesh peers
+                    # even if they don't have any mesh entries yet
+                    all_topics = set(router.mesh.keys()) | self._my_subscriptions
+                    for topic in list(all_topics):
                         mesh_peers = router.mesh.get(topic, set())
                         mesh_size = len(mesh_peers)
                         peer_topics_for_topic = self._pubsub.peer_topics.get(topic, set())
@@ -945,6 +949,9 @@ class Peers:
                             added = 0
                             for peer in list(missing):
                                 try:
+                                    # Ensure mesh set exists for this topic
+                                    if topic not in router.mesh:
+                                        router.mesh[topic] = set()
                                     router.mesh[topic].add(peer)
                                     await router.emit_graft(topic, peer)
                                     added += 1

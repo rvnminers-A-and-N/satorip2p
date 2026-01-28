@@ -313,6 +313,11 @@ class OracleNetwork:
         self._fetch_cancel_scopes: Dict[str, trio.CancelScope] = {}  # stream_id -> cancel scope
         self._http_client: Optional["httpx.AsyncClient"] = None
 
+        # Message deduplication - GossipSub delivers same message from multiple mesh peers
+        self._seen_messages: Dict[str, float] = {}  # message_hash -> timestamp
+        self._seen_messages_max_size = 10000
+        self._seen_messages_ttl = 300  # 5 minutes
+
     def set_stream_registry(self, registry: "StreamRegistry") -> None:
         """Set stream registry reference for activity tracking."""
         self._stream_registry = registry
@@ -639,6 +644,36 @@ class OracleNetwork:
         logger.debug(f"Unsubscribed from stream_id={stream_id}")
         return True
 
+    def _is_duplicate_message(self, msg_data: bytes, stream_id: str) -> bool:
+        """
+        Check if a message is a duplicate based on content hash.
+
+        GossipSub delivers the same message from multiple mesh peers.
+        We deduplicate by hashing the message content + stream_id.
+
+        Returns:
+            True if message was already seen, False otherwise
+        """
+        msg_hash = hashlib.sha256(msg_data + stream_id.encode()).hexdigest()[:32]
+        now = time.time()
+
+        if msg_hash in self._seen_messages:
+            return True
+
+        self._seen_messages[msg_hash] = now
+
+        # Cleanup when exceeds max size
+        if len(self._seen_messages) > self._seen_messages_max_size:
+            sorted_items = sorted(self._seen_messages.items(), key=lambda x: x[1])
+            self._seen_messages = dict(sorted_items[len(sorted_items) // 2:])
+
+        # Remove expired entries
+        expired = [h for h, t in self._seen_messages.items() if now - t > self._seen_messages_ttl]
+        for h in expired:
+            del self._seen_messages[h]
+
+        return False
+
     async def _process_oracle_messages(self, stream_id: str, topic: str) -> None:
         """
         Process incoming messages for an oracle observation subscription.
@@ -671,6 +706,12 @@ class OracleNetwork:
             while stream_id in self._subscribed_streams:
                 try:
                     msg = await subscription.get()
+
+                    # Check for duplicate message BEFORE processing
+                    if self._is_duplicate_message(msg.data, stream_id):
+                        logger.debug(f"Duplicate oracle message on {stream_id}, skipping")
+                        continue
+
                     byte_size = len(msg.data)
                     logger.info(f"Oracle received message on {topic}: {byte_size} bytes")
 

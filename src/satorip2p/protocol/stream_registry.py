@@ -688,6 +688,10 @@ class StreamRegistry:
         """Get list of streams we've claimed."""
         return list(self._my_claims.values())
 
+    def get_my_claims(self) -> List[StreamClaim]:
+        """Get list of our current claims (sync version for compatibility)."""
+        return list(self._my_claims.values())
+
     async def get_stream_claims(self, stream_id: str, include_grace_period: bool = True) -> List[StreamClaim]:
         """
         Get all active claims for a stream.

@@ -1217,10 +1217,10 @@ class Peers:
         try:
             # Ensure we're subscribed to the topic before publishing
             # GossipSub requires subscription to be in the mesh
-            if topic not in self._subscriptions:
+            if topic not in self._my_subscriptions:
                 logger.info(f"Auto-subscribing to {topic} for publishing")
                 await self._pubsub.subscribe(topic)
-                self._subscriptions[topic] = []  # No callbacks, just mesh membership
+                self._my_subscriptions.add(topic)
 
             data = serialize_message(message)
             logger.info(f"Publishing to topic {topic} ({len(data)} bytes)")

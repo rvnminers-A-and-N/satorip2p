@@ -415,7 +415,10 @@ class UptimeTracker:
         self._round_start: int = 0
 
         # Node roles (declared by each node)
+        # Keyed by node_id (usually evrmore address)
         self._node_roles: Dict[str, Set[str]] = defaultdict(set)
+        # Also keyed by peer_id (libp2p peer ID) for P2P lookups
+        self._peer_roles: Dict[str, Set[str]] = defaultdict(set)
 
         # Heartbeat sending state
         self._is_heartbeating: bool = False
@@ -1056,9 +1059,12 @@ class UptimeTracker:
         if len(self._recent_heartbeats) > self._recent_heartbeats_max:
             self._recent_heartbeats = self._recent_heartbeats[-self._recent_heartbeats_max:]
 
-        # Store node roles
+        # Store node roles (by both node_id and peer_id for different lookups)
         for role in heartbeat.roles:
             self._node_roles[heartbeat.node_id].add(role)
+            # Also store by peer_id if available (for P2P peer lookups)
+            if heartbeat.peer_id:
+                self._peer_roles[heartbeat.peer_id].add(role)
 
         # Store node stake (for governance voting power calculation)
         if heartbeat.stake > 0:
@@ -1232,8 +1238,12 @@ class UptimeTracker:
         return qualified
 
     def get_node_roles(self, node_id: str) -> Set[str]:
-        """Get declared roles for a node."""
+        """Get declared roles for a node by evrmore address."""
         return self._node_roles.get(node_id, set())
+
+    def get_peer_roles(self, peer_id: str) -> Set[str]:
+        """Get declared roles for a peer by libp2p peer_id."""
+        return self._peer_roles.get(peer_id, set())
 
     def get_recent_heartbeats(self, limit: int = 20) -> List[Heartbeat]:
         """

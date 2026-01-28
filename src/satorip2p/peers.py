@@ -1215,10 +1215,17 @@ class Peers:
             return False
 
         try:
+            # Ensure we're subscribed to the topic before publishing
+            # GossipSub requires subscription to be in the mesh
+            if topic not in self._subscriptions:
+                logger.info(f"Auto-subscribing to {topic} for publishing")
+                await self._pubsub.subscribe(topic)
+                self._subscriptions[topic] = []  # No callbacks, just mesh membership
+
             data = serialize_message(message)
-            logger.debug(f"Publishing to topic {topic}")
+            logger.info(f"Publishing to topic {topic} ({len(data)} bytes)")
             await self._pubsub.publish(topic, data)
-            logger.debug(f"Published to {topic} successful")
+            logger.info(f"Published to {topic} successful")
 
             # Track bandwidth for outgoing message
             if self._bandwidth_tracker:

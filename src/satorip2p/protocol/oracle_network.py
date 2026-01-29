@@ -353,6 +353,10 @@ class OracleNetwork:
                 )
                 logger.debug(f"Subscribed to {self.ORACLE_REGISTRY_TOPIC}")
 
+            # Start periodic re-broadcast of our oracle registrations
+            if hasattr(self.peers, '_nursery') and self.peers._nursery:
+                self.peers._nursery.start_soon(self._periodic_rebroadcast_task)
+
             self._started = True
             logger.info("OracleNetwork started")
             return True
@@ -360,6 +364,32 @@ class OracleNetwork:
         except Exception as e:
             logger.error(f"Failed to start OracleNetwork: {e}")
             return False
+
+    async def _periodic_rebroadcast_task(self) -> None:
+        """Periodically re-broadcast our oracle registrations so new peers discover them."""
+        # Initial delay - let network stabilize first
+        await trio.sleep(120)
+        logger.info("Oracle periodic rebroadcast task started (every 5 minutes)")
+
+        while self._started:
+            try:
+                # Re-broadcast all our registrations
+                rebroadcast_count = 0
+                for stream_id, reg in list(self._my_registrations.items()):
+                    try:
+                        await self._broadcast_oracle_registration(reg)
+                        rebroadcast_count += 1
+                    except Exception as e:
+                        logger.debug(f"Failed to rebroadcast registration for {stream_id}: {e}")
+
+                if rebroadcast_count > 0:
+                    logger.info(f"Rebroadcast {rebroadcast_count} oracle registration(s)")
+
+            except Exception as e:
+                logger.warning(f"Error in periodic rebroadcast: {e}")
+
+            # Re-broadcast every 5 minutes
+            await trio.sleep(300)
 
     async def stop(self) -> None:
         """Stop the oracle network."""
@@ -517,6 +547,48 @@ class OracleNetwork:
             logger.debug(f"Oracle registration broadcast failed: {e}")
             return False
 
+    async def request_network_sync(self) -> int:
+        """
+        Request all peers to re-broadcast their oracle registrations.
+
+        This is useful when a node restarts and missed registrations.
+        Returns the number of registrations received (may take a moment).
+        """
+        try:
+            # Broadcast a sync request - peers will respond by re-broadcasting their registrations
+            await self.peers.broadcast(
+                self.ORACLE_REGISTRY_TOPIC,
+                {
+                    "type": "sync_request",
+                    "data": {
+                        "requester": self.evrmore_address,
+                        "peer_id": self.peer_id,
+                        "timestamp": int(time.time())
+                    }
+                }
+            )
+            logger.info("Broadcast oracle sync request to network")
+            return len(self._oracle_registrations)
+        except Exception as e:
+            logger.warning(f"Failed to request network sync: {e}")
+            return 0
+
+    async def _handle_sync_request(self, requester: str, requester_peer_id: str) -> None:
+        """Handle a sync request by re-broadcasting our registrations."""
+        # Don't respond to our own requests
+        if requester == self.evrmore_address:
+            return
+
+        # Re-broadcast all our registrations so the requester receives them
+        for stream_id, reg in list(self._my_registrations.items()):
+            try:
+                await self._broadcast_oracle_registration(reg)
+            except Exception as e:
+                logger.debug(f"Failed to broadcast registration for {stream_id} in sync response: {e}")
+
+        if self._my_registrations:
+            logger.info(f"Responded to sync request from {requester[:16]}... with {len(self._my_registrations)} registration(s)")
+
     async def _on_oracle_registration(self, stream_id: str, data: dict) -> None:
         """Handle received oracle registration or deregistration."""
         try:
@@ -549,6 +621,14 @@ class OracleNetwork:
                         # Clean up empty stream entries
                         if not self._oracle_registrations[dereg_stream_id]:
                             del self._oracle_registrations[dereg_stream_id]
+                return
+
+            if msg_type == "sync_request":
+                # Handle sync request - re-broadcast our registrations
+                sync_data = data.get("data", {})
+                requester = sync_data.get("requester", "")
+                requester_peer_id = sync_data.get("peer_id", "")
+                await self._handle_sync_request(requester, requester_peer_id)
                 return
 
             if msg_type != "register":
